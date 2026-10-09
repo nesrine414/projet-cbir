@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+
+# Config locale et secrets
+.env
+
+# Données lourdes et signatures calculées (dossiers gardés via .gitkeep)
+/data/*
+!/data/.gitkeep
+/index/*
+!/index/.gitkeep
+
+# Fichiers lourds
+*.zip
+*.npy
+*.pkl
+*.joblib
+
+# Éditeur et système
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
