@@ -14,7 +14,8 @@ from elasticsearch import Elasticsearch  # noqa: E402
 from elasticsearch.exceptions import ConnectionError as ESConnectionError  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.responses import FileResponse, RedirectResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from api.schemas import Hit, SearchRequest, SearchResponse  # noqa: E402
 from cbir.search import visual_search  # noqa: E402
@@ -33,6 +34,11 @@ def image_url(dataset, image_id):
 
 def category_of(image_id):
     return image_id.split("/")[0] if "/" in image_id else ""
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    return RedirectResponse("/web/")
 
 
 @app.get("/health")
@@ -89,3 +95,9 @@ def get_image(dataset: str, image_id: str):
     if root.resolve() not in path.parents or not path.is_file():
         raise HTTPException(404, "Image introuvable")
     return FileResponse(path)
+
+
+# Interface web (dossier web/), servie par la même application : http://localhost:8000/web/
+WEB_DIR = ROOT / "web"
+if WEB_DIR.is_dir():
+    app.mount("/web", StaticFiles(directory=WEB_DIR, html=True), name="web")

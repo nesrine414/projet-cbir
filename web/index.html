@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="fr">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Moteur de recherche d'images</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <header>
+        <h1>Moteur de recherche d'images</h1>
+        <p>Par mots-clés, par image, ou les deux.</p>
+    </header>
+    <main>
+        <form id="form">
+            <div class="row">
+                <label class="grow">Mots-clés
+                    <input id="text" type="text" placeholder="ex. butterfly, ceiling fan" autofocus>
+                </label>
+                <label>Base
+                    <select id="dataset">
+                        <option value="objects">Objects</option>
+                    </select>
+                </label>
+                <label>Résultats
+                    <input id="k" type="number" min="1" max="200" value="20">
+                </label>
+            </div>
+
+            <fieldset id="descs">
+                <legend>Descripteurs (recherche par image)</legend>
+                <label><input type="checkbox" value="color" checked> Couleur</label>
+                <label><input type="checkbox" value="lbp"> Texture (LBP)</label>
+                <label><input type="checkbox" value="hog"> Forme (HOG)</label>
+                <label><input type="checkbox" value="mpeg7"> MPEG-7</label>
+            </fieldset>
+
+            <div id="query" class="query" hidden>
+                <img id="qimg" alt="Image requête">
+                <div>
+                    <strong>Image requête</strong>
+                    <div id="qid"></div>
+                    <label>Si mots-clés et image :
+                        <select id="operator">
+                            <option value="AND">ET</option>
+                            <option value="OR">OU</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="button" id="clear">Retirer l'image</button>
+            </div>
+
+            <button type="submit" class="primary">Rechercher</button>
+        </form>
+
+        <p id="status" role="status"></p>
+        <section id="results" class="grid"></section>
+    </main>
+    <script src="js/app.js"></script>
+</body>
+
+</html>
