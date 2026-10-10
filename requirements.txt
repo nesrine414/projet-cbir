@@ -1,0 +1,18 @@
+# ── Moteur CBIR (Partie A) ────────────────────────────────────────────────────
+numpy==2.4.2                # vecteurs, calculs numériques
+opencv-python==5.0.0.93    # traitement d'images (HSV, calcHist)
+Pillow==12.1.0              # chargement des images (PIL)
+scikit-image==0.26.0        # LBP (texture), HOG (forme)
+tqdm==4.70.1                # barre de progression (build_index)
+
+# ── API FastAPI (Partie B) ────────────────────────────────────────────────────
+fastapi==0.143.0            # serveur web (routes /search, /images)
+uvicorn[standard]==0.54.0   # serveur ASGI pour lancer FastAPI
+python-multipart            # upload de fichiers (POST /search/upload)
+pydantic                    # validation des schémas JSON
+
+# ── Recherche textuelle (Partie B) ───────────────────────────────────────────
+elasticsearch==8.*          # client Python pour Elasticsearch
+
+# ── Utilitaires ───────────────────────────────────────────────────────────────
+python-dotenv               # lecture du fichier .env

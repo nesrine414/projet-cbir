@@ -1,29 +1,29 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.ipynb_checkpoints/
-*.egg-info/
+# Données (trop lourdes pour Git)
+data/
 
-# Config locale et secrets
+# Index calculés (régénérables avec build_index.py)
+index/*.pkl
+index/*.npy
+
+# Environnement Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Variables d'environnement
 .env
 
-# Données lourdes et signatures calculées (dossiers gardés via .gitkeep)
-/data/*
-!/data/.gitkeep
-/index/*
-!/index/.gitkeep
-
-# Fichiers lourds
-*.zip
-*.npy
-*.pkl
-*.joblib
-
-# Éditeur et système
+# IDE
 .vscode/
 .idea/
+*.swp
+
+# OS
 .DS_Store
 Thumbs.db
