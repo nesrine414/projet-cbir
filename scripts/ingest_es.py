@@ -5,6 +5,7 @@ Usage, depuis la racine du projet :
 Options : --reset pour supprimer l'index avant de le recréer.
 """
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -14,10 +15,19 @@ sys.path.insert(0, str(ROOT / "src"))
 from elasticsearch import Elasticsearch, helpers  # noqa: E402
 
 from cbir.data import list_images  # noqa: E402
-from cbir.text_search import ES_URL, INDEX, MAPPING  # noqa: E402
+from cbir.text_search import ES_URL, INDEX, MAPPING, SETTINGS  # noqa: E402
 
 
-def documents(root, dataset):
+def load_tags():
+    """Mots-clés par catégorie (anglais, français, synonymes) : config/category_tags.json."""
+    path = ROOT / "config" / "category_tags.json"
+    if not path.exists():
+        print("config/category_tags.json introuvable : pas de mots-clés supplémentaires")
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def documents(root, dataset, tags):
     files, ids, cats = list_images(root)
     for f, image_id, cat in zip(files, ids, cats):
         yield {
@@ -29,7 +39,7 @@ def documents(root, dataset):
                 "category": cat,
                 "category_words": cat.replace("_", " ").replace("-", " "),
                 "title": f.stem.replace("_", " ").replace("-", " "),
-                "tags": "",
+                "tags": tags.get(cat, ""),
             },
         }
 
@@ -46,10 +56,16 @@ def main():
         es.indices.delete(index=INDEX)
         print("index supprimé")
     if not es.indices.exists(index=INDEX):
-        es.indices.create(index=INDEX, mappings=MAPPING)
+        es.indices.create(index=INDEX, body={"settings": SETTINGS, "mappings": MAPPING})
         print("index créé :", INDEX)
 
-    n, _ = helpers.bulk(es, documents(a.root, a.dataset))
+    tags = load_tags()
+    categories = {c for c in list_images(a.root)[2] if c}
+    manquantes = sorted(categories - set(tags))
+    if manquantes:
+        print("catégories sans mots-clés supplémentaires :", ", ".join(manquantes))
+
+    n, _ = helpers.bulk(es, documents(a.root, a.dataset, tags))
     es.indices.refresh(index=INDEX)
     print(n, "documents indexés pour le dataset", a.dataset)
 

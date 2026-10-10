@@ -1,20 +1,53 @@
-// Client web : appelle l'API (POST /search) et affiche la grille de résultats.
+// Client web : appelle l'API (/search et /search/upload) et affiche la grille de résultats.
 const $ = (id) => document.getElementById(id);
-let queryImage = null; // id de l'image requête choisie (ex. "butterfly/image_0001.jpg")
+const MAX_BYTES = 10 * 1024 * 1024;
+let queryImage = null; // id d'une image de la base (clic sur un résultat)
+let uploadFile = null; // fichier envoyé depuis l'ordinateur
+let previewUrl = null;
 
 function setStatus(message, isError = false) {
-    const el = $("status");
-    el.textContent = message;
-    el.classList.toggle("error", isError);
+    $("status").textContent = message;
+    $("status").classList.toggle("error", isError);
 }
 
-function setQueryImage(id, url) {
-    queryImage = id;
-    $("query").hidden = id === null;
-    if (id !== null) {
-        $("qimg").src = url;
-        $("qid").textContent = id;
+function applyMode() {
+    const mode = $("mode").value;
+    $("textbox").hidden = mode === "image";
+    $("imagebox").hidden = mode === "text";
+    $("descs").hidden = mode === "text";
+    $("opwrap").hidden = mode !== "both";
+}
+
+function showQuery(src, label) {
+    $("qimg").src = src;
+    $("qname").textContent = label;
+    $("query").hidden = false;
+}
+
+function clearQuery() {
+    queryImage = null;
+    uploadFile = null;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    $("file").value = "";
+    $("query").hidden = true;
+}
+
+function handleFile(file) {
+    if (!file) return;
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+        setStatus("Format non accepté : utilisez une image PNG, JPG ou JPEG.", true);
+        return;
     }
+    if (file.size > MAX_BYTES) {
+        setStatus("Image trop lourde (10 Mo maximum).", true);
+        return;
+    }
+    clearQuery();
+    uploadFile = file;
+    previewUrl = URL.createObjectURL(file);
+    showQuery(previewUrl, file.name);
+    setStatus("");
 }
 
 function render(results) {
@@ -22,8 +55,7 @@ function render(results) {
     grid.replaceChildren();
     for (const hit of results) {
         const card = document.createElement("figure");
-        card.className = "card";
-        card.style.margin = "0";
+        card.className = "item";
 
         const btn = document.createElement("button");
         btn.type = "button";
@@ -34,7 +66,13 @@ function render(results) {
         img.loading = "lazy";
         btn.appendChild(img);
         btn.addEventListener("click", () => {
-            setQueryImage(hit.id, hit.url);
+            clearQuery();
+            queryImage = hit.id;
+            showQuery(hit.url, hit.id);
+            if ($("mode").value === "text") {
+                $("mode").value = "image";
+                applyMode();
+            }
             runSearch();
             window.scrollTo({ top: 0, behavior: "smooth" });
         });
@@ -49,38 +87,53 @@ function render(results) {
             detail.textContent = "score " + hit.score.toFixed(2);
         }
         info.append(cat, detail);
-
         card.append(btn, info);
         grid.appendChild(card);
     }
 }
 
 async function runSearch() {
+    const mode = $("mode").value;
+    const needText = mode !== "image";
+    const needImage = mode !== "text";
     const text = $("text").value.trim();
-    if (!text && !queryImage) {
-        setStatus("Saisissez des mots-clés ou cliquez sur une image.", true);
-        return;
+    const descriptors = [...document.querySelectorAll("#descs input:checked")].map((c) => c.value);
+    const base = { dataset: $("dataset").value, operator: $("operator").value, k: Number($("k").value) || 12 };
+
+    if (needText && !text) return setStatus("Saisissez des mots-clés.", true);
+    if (needImage && !queryImage && !uploadFile) {
+        return setStatus("Choisissez une image : envoi depuis l'ordinateur ou clic sur un résultat.", true);
     }
-    const body = {
-        dataset: $("dataset").value,
-        text: text || null,
-        query_image_id: queryImage,
-        descriptors: [...document.querySelectorAll("#descs input:checked")].map((c) => c.value),
-        operator: $("operator").value,
-        k: Number($("k").value) || 20,
-    };
+    if (needImage && descriptors.length === 0) return setStatus("Cochez au moins un descripteur.", true);
+
     setStatus("Recherche en cours…");
     try {
-        const res = await fetch("/search", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
+        let res;
+        if (needImage && uploadFile) {
+            const fd = new FormData();
+            fd.append("file", uploadFile);
+            fd.append("dataset", base.dataset);
+            fd.append("operator", base.operator);
+            fd.append("k", String(base.k));
+            fd.append("descriptors", descriptors.join(","));
+            fd.append("text", needText ? text : "");
+            res = await fetch("/search/upload", { method: "POST", body: fd });
+        } else {
+            res = await fetch("/search", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    ...base,
+                    text: needText ? text : null,
+                    query_image_id: needImage ? queryImage : null,
+                    descriptors: needImage ? descriptors : [],
+                }),
+            });
+        }
         const data = await res.json();
         if (!res.ok) {
             render([]);
-            setStatus(typeof data.detail === "string" ? data.detail : "Requête invalide.", true);
-            return;
+            return setStatus(typeof data.detail === "string" ? data.detail : "Requête invalide.", true);
         }
         render(data.results);
         setStatus(data.count + " résultat(s)");
@@ -90,8 +143,23 @@ async function runSearch() {
     }
 }
 
+$("mode").addEventListener("change", applyMode);
+$("k").addEventListener("input", () => ($("kout").textContent = $("k").value));
 $("form").addEventListener("submit", (e) => {
     e.preventDefault();
     runSearch();
 });
-$("clear").addEventListener("click", () => setQueryImage(null));
+$("clear").addEventListener("click", clearQuery);
+$("file").addEventListener("change", (e) => handleFile(e.target.files[0]));
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    drop.classList.add("over");
+});
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    handleFile(e.dataTransfer.files[0]);
+});
+applyMode();

@@ -12,17 +12,19 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from elasticsearch import Elasticsearch  # noqa: E402
 from elasticsearch.exceptions import ConnectionError as ESConnectionError  # noqa: E402
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from api.schemas import Hit, SearchRequest, SearchResponse  # noqa: E402
+import cbir.search as search_module  # noqa: E402
 from cbir.search import visual_search  # noqa: E402
 from cbir.text_search import ES_URL, search_text  # noqa: E402
 
 # Datasets disponibles : nom -> dossier des images
 DATASETS = {"objects": ROOT / "data" / "objects"}
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 app = FastAPI(title="Moteur de recherche d'images")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -82,6 +84,44 @@ def search(req: SearchRequest):
             )
             for h in found
         ]
+    return SearchResponse(count=len(hits), results=hits)
+
+
+@app.post("/search/upload", response_model=SearchResponse)
+async def search_upload(
+    file: UploadFile = File(...),
+    dataset: str = Form("objects"),
+    descriptors: str = Form("color"),
+    k: int = Form(20),
+    text: str = Form(""),
+    operator: str = Form("AND"),
+):
+    """Recherche par une image envoyée depuis l'ordinateur."""
+    if dataset not in DATASETS:
+        raise HTTPException(404, f"Dataset inconnu : {dataset}")
+    if text.strip():
+        raise HTTPException(501, "La fusion texte + image n'est pas encore implémentée.")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(415, "Le fichier envoyé n'est pas une image.")
+    data = await file.read()
+    if not data:
+        raise HTTPException(422, "Fichier vide.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Image trop lourde (10 Mo maximum).")
+
+    # Contrat avec la personne A : visual_search_image(dataset, image_bytes, descriptors, k) -> [{"id", "distance"}]
+    fn = getattr(search_module, "visual_search_image", None)
+    if fn is None:
+        raise HTTPException(501, "La recherche par image envoyée n'est pas encore disponible.")
+    names = [d.strip() for d in descriptors.split(",") if d.strip()]
+    try:
+        found = fn(dataset, data, names, k=max(1, min(k, 200)))
+    except NotImplementedError:
+        raise HTTPException(501, "La recherche par image envoyée n'est pas encore disponible.")
+    hits = [
+        Hit(id=h["id"], url=image_url(dataset, h["id"]), category=category_of(h["id"]), distance=h["distance"])
+        for h in found
+    ]
     return SearchResponse(count=len(hits), results=hits)
 
 
