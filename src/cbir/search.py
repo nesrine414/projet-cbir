@@ -4,9 +4,10 @@ Orchestrateur de la recherche CBIR (phase On-line).
 Relie tous les modules :
     image requête -> descripteur -> vecteur -> index -> distances -> résultats
 
-Usage depuis l'API ou les scripts :
-    from cbir.search import search
-    results = search("data/objects/accordion/image_0001.jpg", "hsv", "chi2", k=10)
+Fonctions exposées à l'API :
+    - search()              : usage direct (chemin fichier)
+    - visual_search()       : appelée par POST /search (image_id dans la base)
+    - visual_search_image() : appelée par POST /search/upload (bytes uploadés)
 """
 
 import io
@@ -123,7 +124,91 @@ def search(
     desc_index = get_descriptor_index(full_index, descriptor.name)
     distance_fn = get_distance(distance_name)
 
-    # 6. Recherche exhaustive et retour des résultats
-    results = linear.search(query_vector, desc_index, distance_fn, k=k)
+    return linear.search(query_vector, desc_index, distance_fn, k=k)
 
-    return results
+
+def visual_search(
+    dataset: str,
+    query_image_id: str,
+    descriptors: list[str],
+    k: int = 20,
+) -> list[dict]:
+    """
+    Recherche visuelle à partir d'une image déjà dans la base.
+    Appelée par POST /search de l'API.
+
+    Args:
+        dataset         : nom du dataset ('objects').
+        query_image_id  : chemin relatif de l'image dans data/ (ex: 'accordion/image_0001.jpg').
+        descriptors     : liste de noms de descripteurs (ex: ['color', 'texture']).
+        k               : nombre de résultats.
+
+    Returns:
+        Liste de dicts {"id": str, "distance": float}.
+    """
+    # Résoudre le chemin complet de l'image requête
+    img_path = DATA_DIR / dataset / query_image_id
+    if not img_path.exists():
+        raise FileNotFoundError(f"Image introuvable : {img_path}")
+
+    image = Image.open(img_path).convert("RGB")
+
+    # Si plusieurs descripteurs demandés : fusionner les scores (union des résultats)
+    if not descriptors:
+        descriptors = ["color"]
+
+    if len(descriptors) == 1:
+        return _run_search(image, descriptors[0], k)
+
+    # Fusion multi-descripteurs : moyenne des rangs
+    from collections import defaultdict
+    rank_sum: dict[str, float] = defaultdict(float)
+
+    for desc_name in descriptors:
+        results = _run_search(image, desc_name, k * 2)
+        for rank, item in enumerate(results):
+            rank_sum[item["id"]] += rank  # plus le rang est petit, mieux c'est
+
+    # Trier par rang moyen croissant
+    fused = sorted(rank_sum.items(), key=lambda x: x[1])[:k]
+    return [{"id": img_id, "distance": float(rank)} for img_id, rank in fused]
+
+
+def visual_search_image(
+    dataset: str,
+    image_bytes: bytes,
+    descriptors: list[str],
+    k: int = 20,
+) -> list[dict]:
+    """
+    Recherche visuelle à partir d'une image uploadée (bytes bruts).
+    Appelée par POST /search/upload de l'API.
+
+    Args:
+        dataset     : nom du dataset ('objects').
+        image_bytes : contenu binaire de l'image uploadée.
+        descriptors : liste de noms de descripteurs.
+        k           : nombre de résultats.
+
+    Returns:
+        Liste de dicts {"id": str, "distance": float}.
+    """
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+    if not descriptors:
+        descriptors = ["color"]
+
+    if len(descriptors) == 1:
+        return _run_search(image, descriptors[0], k)
+
+    # Fusion multi-descripteurs (même logique que visual_search)
+    from collections import defaultdict
+    rank_sum: dict[str, float] = defaultdict(float)
+
+    for desc_name in descriptors:
+        results = _run_search(image, desc_name, k * 2)
+        for rank, item in enumerate(results):
+            rank_sum[item["id"]] += rank
+
+    fused = sorted(rank_sum.items(), key=lambda x: x[1])[:k]
+    return [{"id": img_id, "distance": float(rank)} for img_id, rank in fused]
