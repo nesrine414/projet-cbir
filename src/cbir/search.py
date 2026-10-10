@@ -5,7 +5,7 @@ Relie tous les modules :
     image requête -> descripteur -> vecteur -> index -> distances -> résultats
 
 Usage depuis l'API ou les scripts :
-    from cbir.search import search
+    from cbir.search import search, visual_search
     results = search("data/objects/accordion/image_0001.jpg", "hsv", "chi2", k=10)
 """
 
@@ -93,3 +93,32 @@ def search(
     results = linear.search(query_vector, desc_index, distance_fn, k=k)
 
     return results
+
+
+def visual_search(dataset: str, query_id: str, descriptors: list[str] | str, k: int = 20, metric: str = "chi2"):
+    """
+    Retourne [{"id": str, "distance": float}], du plus proche au plus éloigné.
+    Contrat avec l'API (api/main.py).
+    """
+    desc_map = {"color": "hsv", "texture": "lbp", "shape": "hog"}
+    if isinstance(descriptors, list) and descriptors:
+        desc_name = descriptors[0]
+    elif isinstance(descriptors, str):
+        desc_name = descriptors
+    else:
+        desc_name = "hsv"
+    desc_name = desc_map.get(desc_name, desc_name)
+
+    dist_map = {"l1": "l1", "l2": "l2", "chi2": "chi2"}
+    dist_name = dist_map.get(metric, "chi2")
+
+    img_path = Path("data") / dataset / query_id
+    try:
+        raw_results = search(str(img_path), descriptor_name=desc_name, distance_name=dist_name, k=k)
+        results = []
+        for p, d in raw_results:
+            clean_id = p.replace(f"{dataset}/", "").replace(f"{dataset}\\", "")
+            results.append({"id": clean_id, "distance": float(d)})
+        return results
+    except (FileNotFoundError, KeyError, ValueError) as e:
+        raise NotImplementedError(f"Recherche visuelle non disponible : {e}")

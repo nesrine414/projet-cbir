@@ -44,7 +44,7 @@ def search_text(query, dataset=None, k=20, es=None):
         "multi_match": {
             "query": query,
             "fields": ["category_words^3", "tags^2", "title"],
-            "fuzziness": "AUTO",
+            "fuzziness": "AUTO:4,8",
         }
     }]
     flt = [{"term": {"dataset": dataset}}] if dataset else []
