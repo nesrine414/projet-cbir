@@ -24,6 +24,7 @@ from cbir.descriptors.color import HSVDescriptor, RGBDescriptor
 from cbir.descriptors.texture import LBPDescriptor
 from cbir.descriptors.shape import HOGDescriptor
 from cbir.index.store import save_index
+from cbir.descriptors.spatial import HSVGridDescriptor, LBPGridDescriptor
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -35,6 +36,8 @@ ALL_DESCRIPTORS = {
     "rgb": RGBDescriptor(),
     "lbp": LBPDescriptor(),
     "hog": HOGDescriptor(),
+    "hsvgrid": HSVGridDescriptor(),
+    "lbpgrid": LBPGridDescriptor(),
 }
 
 # Extensions d'images supportées
