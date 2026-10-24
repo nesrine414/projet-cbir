@@ -381,3 +381,5 @@ def visual_search_image(
     """Recherche visuelle à partir d'une image uploadée (POST /search/upload)."""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     return _optimized_search(image, k, descriptors, candidate_ids)
+
+    
