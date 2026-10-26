@@ -2,16 +2,15 @@
 Phase Off-line : calcul et stockage des signatures.
 
 Ce script parcourt toute la base data/objects/, extrait les signatures
-de chaque image avec chaque descripteur, et sauvegarde l'index dans index/.
+de chaque image avec chaque descripteur (classiques + deep ResNet),
+et sauvegarde l'index dans index/.
 
 Usage :
     python scripts/build_index.py
-    python scripts/build_index.py --descriptors hsv lbp
-    python scripts/build_index.py --output my_index.pkl
 """
 
-import sys
 import argparse
+import sys
 from pathlib import Path
 
 # Ajouter src/ au path pour les imports
@@ -20,27 +19,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PIL import Image
 from tqdm import tqdm
 
-from cbir.descriptors.color import HSVDescriptor, RGBDescriptor
+from cbir.descriptors.color import HSVDescriptor
+from cbir.descriptors.mpeg7 import (
+    ColorLayoutDescriptor,
+    EdgeHistogramDescriptor,
+    ScalableColorDescriptor,
+)
 from cbir.descriptors.texture import LBPDescriptor
 from cbir.descriptors.shape import HOGDescriptor
-from cbir.index.store import save_index
+from cbir.index.store import load_index, save_index
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "objects"
-
-# Tous les descripteurs disponibles
-ALL_DESCRIPTORS = {
-    "hsv": HSVDescriptor(),
-    "rgb": RGBDescriptor(),
-    "lbp": LBPDescriptor(),
-    "hog": HOGDescriptor(),
+ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = ROOT / "data"
+DATASET_ROOTS = {
+    "objects": DATA_ROOT / "objects",
+    "mirflickr": DATA_ROOT / "mirflickr25k",
 }
 
-# Extensions d'images supportées
+BASE_DESCRIPTORS = {
+    "hsv": HSVDescriptor(),
+    "lbp": LBPDescriptor(),
+    "hog": HOGDescriptor(),
+    "cld": ColorLayoutDescriptor(),
+    "ehd": EdgeHistogramDescriptor(),
+    "scd": ScalableColorDescriptor(),
+}
+ALL_DESCRIPTOR_NAMES = [*BASE_DESCRIPTORS, "resnet"]
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
-# ── Fonctions ─────────────────────────────────────────────────────────────────
 
 def collect_images(data_dir: Path) -> list[Path]:
     """Retourne la liste de toutes les images dans data/objects/."""
@@ -51,18 +60,13 @@ def collect_images(data_dir: Path) -> list[Path]:
     return sorted(images)
 
 
-def build_index(descriptors: dict, data_dir: Path) -> dict:
+def build_index(descriptors: dict, data_dir: Path, dataset: str | None = None) -> dict:
     """
     Calcule les signatures de toutes les images pour chaque descripteur.
-
-    Args:
-        descriptors : {nom: instance_Descriptor}.
-        data_dir    : dossier racine des images.
-
-    Returns:
-        Index complet {nom_descripteur: {chemin_relatif: vecteur}}.
+    Utilise le batching pour accélérer l'extraction des réseaux profonds (ResNet).
     """
     images = collect_images(data_dir)
+    dataset_prefix = dataset or data_dir.name
 
     if not images:
         print(f"[build_index] Aucune image trouvée dans {data_dir}")
@@ -71,62 +75,93 @@ def build_index(descriptors: dict, data_dir: Path) -> dict:
     print(f"[build_index] {len(images)} images trouvées dans {data_dir}")
     print(f"[build_index] Descripteurs : {list(descriptors.keys())}\n")
 
-    # Initialiser l'index vide — clé = desc.name (ex: 'hsv_8_4_4')
     index = {desc.name: {} for desc in descriptors.values()}
 
-    for img_path in tqdm(images, desc="Indexation", unit="img"):
-        try:
-            img = Image.open(img_path).convert("RGB")
-        except Exception as e:
-            print(f"[build_index] Image ignoree {img_path.name} : {e}")
+    batch_size = 32
+    for b_start in tqdm(range(0, len(images), batch_size), desc="Indexation par batch"):
+        batch_paths = images[b_start : b_start + batch_size]
+        batch_imgs = []
+        valid_rel_paths = []
+        for p in batch_paths:
+            try:
+                img = Image.open(p).convert("RGB")
+                batch_imgs.append(img)
+                valid_rel_paths.append(f"{dataset_prefix}/{p.relative_to(data_dir).as_posix()}")
+            except Exception as e:
+                print(f"[build_index] Image ignorée {p.name} : {e}")
+
+        if not batch_imgs:
             continue
 
-        # Clé relative pour la portabilité (indépendant du chemin absolu)
-        rel_path = str(img_path.relative_to(data_dir.parent))
-
         for desc in descriptors.values():
-            try:
-                vector = desc.extract(img)
-                index[desc.name][rel_path] = vector
-            except Exception as e:
-                print(f"[build_index] Erreur {desc.name} sur {img_path.name} : {e}")
+            if hasattr(desc, "extract_batch"):
+                embs = desc.extract_batch(batch_imgs)
+                for rp, emb in zip(valid_rel_paths, embs):
+                    index[desc.name][rp] = emb
+            else:
+                for rp, img in zip(valid_rel_paths, batch_imgs):
+                    try:
+                        index[desc.name][rp] = desc.extract(img)
+                    except Exception as e:
+                        print(f"[build_index] Erreur {desc.name} sur {rp} : {e}")
 
     return index
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="Construction de l'index CBIR (phase off-line)")
+    parser = argparse.ArgumentParser(description="Build a visual descriptor index for one image dataset")
+    parser.add_argument(
+        "--dataset",
+        choices=("objects", "mirflickr"),
+        default="objects",
+        help="Dataset folder under data/ (default: objects)",
+    )
     parser.add_argument(
         "--descriptors",
         nargs="+",
-        choices=list(ALL_DESCRIPTORS.keys()),
-        default=list(ALL_DESCRIPTORS.keys()),
-        help="Descripteurs à calculer (défaut : tous)",
+        choices=ALL_DESCRIPTOR_NAMES,
+        default=list(BASE_DESCRIPTORS),
+        help="Descriptors to calculate (default: HSV, LBP, HOG and MPEG-7)",
     )
     parser.add_argument(
         "--output",
-        default="index.pkl",
-        help="Nom du fichier de sortie dans index/ (défaut : index.pkl)",
+        default=None,
+        help="Output filename under index/ (default: index.pkl for Objects, mirflickr.pkl for MIRFLICKR)",
+    )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Keep existing signatures and replace only the selected descriptors",
     )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    selected = {name: BASE_DESCRIPTORS[name] for name in args.descriptors if name != "resnet"}
+    if "resnet" in args.descriptors:
+        try:
+            from cbir.descriptors.deep import ResNetDescriptor
+        except ImportError as exc:
+            raise SystemExit("Install the optional torch and torchvision packages to index ResNet features.") from exc
+        selected["resnet"] = ResNetDescriptor()
 
-    # Filtrer les descripteurs demandés
-    selected = {k: ALL_DESCRIPTORS[k] for k in args.descriptors}
+    dataset_dir = DATASET_ROOTS[args.dataset]
+    output = args.output or ("index.pkl" if args.dataset == "objects" else f"{args.dataset}.pkl")
+    index = build_index(selected, dataset_dir, args.dataset)
 
-    # Construire l'index
-    index = build_index(selected, DATA_DIR)
+    if args.append:
+        try:
+            existing = load_index(output)
+        except FileNotFoundError:
+            existing = {}
+        existing.update(index)
+        index = existing
 
-    # Résumé
     print("\n[build_index] Résumé :")
-    for name, sigs in index.items():
-        print(f"  {name:20s} -> {len(sigs)} signatures")
+    for name, signatures in index.items():
+        print(f"  {name:<20} -> {len(signatures)} signatures")
 
-    # Sauvegarder
-    save_index(index, args.output)
-    print("\nIndexation terminee avec succes !")
+    out_path = save_index(index, filename=output)
+    print(f"[store] Index sauvegardé : {out_path}\n")
+    print("Indexation terminée avec succès !")

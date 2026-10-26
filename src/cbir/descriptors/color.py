@@ -5,88 +5,83 @@ from PIL import Image
 from .base import Descriptor
 
 
+def _grid_cells(img, n=3):
+    """Découpe l'image en n x n cellules régulières."""
+    h, w = img.shape[:2]
+    for i in range(n):
+        for j in range(n):
+            yield img[i * h // n : (i + 1) * h // n, j * w // n : (j + 1) * w // n]
+
+
 class HSVDescriptor(Descriptor):
     """
-    Descripteur couleur basé sur un histogramme HSV 3D.
+    Descripteur couleur spatialisé basé sur un histogramme HSV 3D en grille 3x3.
 
-    Le vecteur final = histogramme aplati et normalisé (L1).
-    Taille : bins[0] * bins[1] * bins[2]  →  par défaut 8*4*4 = 128 valeurs.
+    L'image est redimensionnée à 128x128 puis découpée en 3x3 = 9 cellules.
+    Chaque cellule produit un histogramme 8*4*4 = 128 bins normalisé L1.
+    Taille totale du vecteur : 9 * 128 = 1152 valeurs.
+    Préserve la localisation spatiale des couleurs (haut = ciel/fond, centre = objet).
     """
 
-    def __init__(self, bins: tuple[int, int, int] = (8, 4, 4)):
-        """
-        Args:
-            bins: Nombre de bins pour chaque canal (H, S, V).
-        """
+    TARGET_SIZE = (128, 128)
+
+    def __init__(self, bins: tuple[int, int, int] = (8, 4, 4), grid: int = 3):
         self.bins = bins
+        self.grid = grid
 
     @property
     def name(self) -> str:
-        return f"hsv_{'_'.join(str(b) for b in self.bins)}"
+        return f"hsv_grid{self.grid}_{'_'.join(str(b) for b in self.bins)}"
 
     def extract(self, image: Image.Image) -> np.ndarray:
-        # 1. PIL (RGB) → numpy → BGR (format OpenCV)
-        img_bgr = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
-
-        # 2. BGR → HSV
+        img_resized = image.convert("RGB").resize(self.TARGET_SIZE, Image.BILINEAR)
+        img_bgr = cv2.cvtColor(np.array(img_resized), cv2.COLOR_RGB2BGR)
         img_hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
 
-        # 3. Histogramme 3D
-        # Plages OpenCV : H ∈ [0, 180], S ∈ [0, 256], V ∈ [0, 256]
-        hist = cv2.calcHist(
-            [img_hsv],
-            channels=[0, 1, 2],
-            mask=None,
-            histSize=list(self.bins),
-            ranges=[0, 180, 0, 256, 0, 256],
-        )
+        feats = []
+        for cell in _grid_cells(img_hsv, self.grid):
+            hist = cv2.calcHist(
+                [cell],
+                channels=[0, 1, 2],
+                mask=None,
+                histSize=list(self.bins),
+                ranges=[0, 180, 0, 256, 0, 256],
+            ).flatten()
+            total = hist.sum() + 1e-8
+            feats.append((hist / total).astype(np.float32))
 
-        # 4. Aplatir et normaliser (L1 : somme = 1)
-        hist = hist.flatten().astype(np.float32)
-        total = hist.sum()
-        if total > 0:
-            hist /= total
-
-        return hist
+        return np.concatenate(feats)
 
 
 class RGBDescriptor(Descriptor):
     """
-    Descripteur couleur basé sur un histogramme RGB 3D.
-
-    Alternative à HSV, moins robuste aux changements d'éclairage
-    mais plus simple à interpréter.
-    Taille : bins[0] * bins[1] * bins[2]  →  par défaut 8*8*8 = 512 valeurs.
+    Descripteur couleur spatialisé basé sur un histogramme RGB 3D en grille 3x3.
     """
 
-    def __init__(self, bins: tuple[int, int, int] = (8, 8, 8)):
-        """
-        Args:
-            bins: Nombre de bins pour chaque canal (R, G, B).
-        """
+    TARGET_SIZE = (128, 128)
+
+    def __init__(self, bins: tuple[int, int, int] = (4, 4, 4), grid: int = 3):
         self.bins = bins
+        self.grid = grid
 
     @property
     def name(self) -> str:
-        return f"rgb_{'_'.join(str(b) for b in self.bins)}"
+        return f"rgb_grid{self.grid}_{'_'.join(str(b) for b in self.bins)}"
 
     def extract(self, image: Image.Image) -> np.ndarray:
-        # 1. PIL (RGB) → numpy
-        img_rgb = np.array(image.convert("RGB"))
+        img_resized = image.convert("RGB").resize(self.TARGET_SIZE, Image.BILINEAR)
+        img_rgb = np.array(img_resized)
 
-        # 2. Histogramme 3D sur les 3 canaux RGB
-        hist = cv2.calcHist(
-            [img_rgb],
-            channels=[0, 1, 2],
-            mask=None,
-            histSize=list(self.bins),
-            ranges=[0, 256, 0, 256, 0, 256],
-        )
+        feats = []
+        for cell in _grid_cells(img_rgb, self.grid):
+            hist = cv2.calcHist(
+                [cell],
+                channels=[0, 1, 2],
+                mask=None,
+                histSize=list(self.bins),
+                ranges=[0, 256, 0, 256, 0, 256],
+            ).flatten()
+            total = hist.sum() + 1e-8
+            feats.append((hist / total).astype(np.float32))
 
-        # 3. Aplatir et normaliser (L1)
-        hist = hist.flatten().astype(np.float32)
-        total = hist.sum()
-        if total > 0:
-            hist /= total
-
-        return hist
+        return np.concatenate(feats)

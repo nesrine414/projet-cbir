@@ -21,14 +21,14 @@ body {
 main {
     max-width: 760px;
     margin: 0 auto;
-    padding: 32px 16px 24px;
+    padding: 56px 16px 24px;
     display: grid;
-    gap: 16px;
+    gap: 14px;
 }
 
 h1 {
-    margin: 0 0 8px;
-    font-size: 34px;
+    margin: 0 0 4px;
+    font-size: 32px;
     line-height: 1.2;
     letter-spacing: -.01em;
 }
@@ -36,7 +36,7 @@ h1 {
 .card {
     border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 16px;
+    padding: 14px;
     background: #fff;
 }
 
@@ -71,9 +71,9 @@ summary small {
 
 .opts {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
-    margin-top: 16px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 14px;
 }
 
 label {
@@ -82,19 +82,31 @@ label {
     font-size: 14px;
 }
 
-input[type=text],
+.range-field {
+    align-content: start;
+}
+
+input[type="text"],
 select {
-    font: inherit;
+    width: 100%;
+    min-height: 46px;
     padding: 8px 10px;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--soft);
     color: var(--ink);
-    width: 100%;
+    font: inherit;
 }
 
-input[type=range] {
+input[type="text"]:focus,
+select:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+input[type="range"] {
     width: 100%;
+    margin: 2px 0 0;
     accent-color: var(--accent);
 }
 
@@ -115,22 +127,35 @@ fieldset {
     border: 1px solid var(--line);
     border-radius: 8px;
     display: flex;
-    gap: 16px;
+    gap: 8px 16px;
     flex-wrap: wrap;
     padding: 8px 12px;
+}
+
+legend {
+    padding: 0 2px;
 }
 
 fieldset label {
     display: flex;
     align-items: center;
     gap: 6px;
+    white-space: nowrap;
+}
+
+fieldset label.unavailable {
+    opacity: .45;
+}
+
+fieldset input {
+    accent-color: var(--accent);
 }
 
 [hidden] {
     display: none !important;
 }
 
-form {
+.search-form {
     display: grid;
     gap: 14px;
 }
@@ -139,18 +164,24 @@ form {
     margin: 0;
 }
 
+#textbox > label {
+    max-width: 100%;
+}
+
 .drop {
     display: flex;
     align-items: center;
     gap: 14px;
+    min-height: 68px;
     background: var(--soft);
     border: 1.5px dashed transparent;
     border-radius: 8px;
-    padding: 14px;
+    padding: 12px 14px;
     cursor: pointer;
     color: var(--muted);
 }
 
+.drop:hover,
 .drop.over,
 .drop:focus-within {
     border-color: var(--accent);
@@ -181,6 +212,11 @@ button {
     cursor: pointer;
 }
 
+button:hover,
+.btn:hover {
+    border-color: #aeb9c8;
+}
+
 button.primary {
     justify-self: start;
 }
@@ -205,14 +241,16 @@ button.primary {
     font-size: 14px;
 }
 
-.query>div {
+.query-copy {
     flex: 1;
+    min-width: 0;
+    display: grid;
     word-break: break-all;
 }
 
 .query img {
-    width: 72px;
-    height: 72px;
+    width: 64px;
+    height: 64px;
     object-fit: cover;
     border-radius: 8px;
 }
@@ -227,6 +265,10 @@ button.primary {
     color: var(--err);
 }
 
+#status:empty {
+    min-height: 0;
+}
+
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -234,6 +276,7 @@ button.primary {
 }
 
 .item {
+    min-width: 0;
     margin: 0;
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -264,7 +307,10 @@ button.primary {
 
 .item strong {
     display: block;
+    overflow: hidden;
     color: var(--ink);
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 footer {
@@ -272,4 +318,22 @@ footer {
     font-size: 14px;
     font-weight: 600;
     padding: 16px 16px 32px;
+}
+
+@media (max-width: 620px) {
+    main {
+        padding-top: 28px;
+    }
+
+    h1 {
+        font-size: 28px;
+    }
+
+    .opts {
+        grid-template-columns: 1fr;
+    }
+
+    fieldset {
+        grid-column: 1;
+    }
 }

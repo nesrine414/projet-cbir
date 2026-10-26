@@ -28,6 +28,7 @@ SETTINGS = {
 MAPPING = {
     "properties": {
         "image_id": {"type": "keyword"},
+        "image_url": {"type": "keyword"},
         "dataset": {"type": "keyword"},
         "category": {"type": "keyword"},  # nom exact du dossier, ex. "car_side"
         "category_words": {"type": "text", "analyzer": "folded"},  # "car side" : permet de chercher "car" ou "ceiling fan"
@@ -53,6 +54,7 @@ def search_text(query, dataset=None, k=20, es=None):
     return [
         {
             "id": h["_source"]["image_id"],
+            "url": h["_source"].get("image_url", ""),
             "score": h["_score"],
             "category": h["_source"].get("category", ""),
         }

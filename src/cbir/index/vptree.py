@@ -6,7 +6,7 @@ Principe :
     à tous les autres points, on trouve la médiane µ, puis on divise
     en deux groupes :
         - inner : points à distance ≤ µ du VP
-        - outer : points à distance > µ du VP
+        - outer : points à distance ≥ µ du VP
     On recommence récursivement sur chaque groupe.
 
 Recherche :
@@ -79,12 +79,13 @@ class VPTree:
         distances = [(self.distance_fn(vp_vec, vec), path, vec)
                      for path, vec in rest]
 
-        # 3. Médiane des distances = seuil de partition
-        mu = np.median([d for d, _, _ in distances])
-
-        # 4. Partitionner inner (≤ µ) et outer (> µ)
-        inner_items = [(p, v) for d, p, v in distances if d <= mu]
-        outer_items = [(p, v) for d, p, v in distances if d > mu]
+        # 3–4. Split around the median. Keeping equal-distance points on both
+        # sides avoids a degenerate chain when many signatures are identical.
+        distances.sort(key=lambda item: item[0])
+        split = (len(distances) + 1) // 2
+        mu = distances[split - 1][0]
+        inner_items = [(p, v) for _, p, v in distances[:split]]
+        outer_items = [(p, v) for _, p, v in distances[split:]]
 
         # 5. Construire récursivement
         return _Node(

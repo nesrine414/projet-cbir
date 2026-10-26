@@ -8,7 +8,7 @@ class SearchRequest(BaseModel):
     dataset: str = "objects"
     text: Optional[str] = Field(None, description="Mots-clés (recherche textuelle)")
     query_image_id: Optional[str] = Field(None, description="Id d'une image de la base (recherche visuelle)")
-    descriptors: List[str] = Field(default_factory=lambda: ["color"])
+    descriptors: List[str] = Field(default_factory=lambda: ["auto"])
     operator: str = Field("AND", description="AND ou OR, pour combiner texte et image")
     k: int = Field(20, ge=1, le=200)
 

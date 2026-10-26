@@ -1,17 +1,4 @@
-"""
-Orchestrateur CBIR — Version v5 (qualite + vitesse).
-
-Ameliorations vs v4 :
-  - 4 descripteurs : HSV (128d), RGB (512d), LBP (26d), HOG (8100d)
-  - Fusion par score combine normalise (pas RRF) :
-    1. Chaque descripteur calcule ses distances
-    2. Normalisation min-max par descripteur -> [0,1]
-    3. Score final = somme ponderee des distances normalisees
-    4. HSV et RGB (couleur) comptent DOUBLE vs LBP et HOG
-       -> 2 descripteurs couleur x poids 2 + 2 autres x poids 1 = 6
-  - Le query_image est TOUJOURS re-extrait (pas de lookup dans l'index)
-    -> memes resultats pour upload et search par id
-"""
+"""Image retrieval over the per-dataset descriptor indexes."""
 
 import io
 from pathlib import Path
@@ -19,129 +6,264 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from cbir.descriptors.color import HSVDescriptor, RGBDescriptor
-from cbir.descriptors.texture import LBPDescriptor
+from cbir.descriptors.color import HSVDescriptor
+from cbir.descriptors.mpeg7 import (
+    ColorLayoutDescriptor,
+    EdgeHistogramDescriptor,
+    ScalableColorDescriptor,
+)
 from cbir.descriptors.shape import HOGDescriptor
+from cbir.descriptors.texture import LBPDescriptor
+from cbir.index.vptree import VPTree
 from cbir.index.store import load_index
 
+try:
+    from cbir.descriptors.deep import ResNetDescriptor
+except (ImportError, OSError, RuntimeError):
+    # ResNet is an optional dependency; classic descriptors remain available without it.
+    ResNetDescriptor = None
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-
-# (index_key, descriptor_instance, distance_type, weight)
-DESCRIPTOR_CONFIG = [
-    ("hsv_8_4_4",          HSVDescriptor(),   "chi2", 2.0),
-    ("rgb_8_8_8",          RGBDescriptor(),   "chi2", 2.0),
-    ("lbp_P24_R3",         LBPDescriptor(),   "chi2", 1.0),
-    ("hog_o9_c8x8_b2x2",  HOGDescriptor(),   "l2",   1.0),
-]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
+INDEX_FILES = {"objects": "index.pkl", "mirflickr": "mirflickr.pkl"}
+DATASET_DIRS = {
+    "objects": DATA_DIR / "objects",
+    # The selected source is MIRFLICKR-25K; data/mirflickr holds an older thumbnail set.
+    "mirflickr": DATA_DIR / "mirflickr25k",
+}
+
+# id, display name, index key, descriptor, distance, fusion weight
+DESCRIPTOR_CONFIG = [
+    ("color", "HSV color", "hsv_grid3_8_4_4", HSVDescriptor(), "chi2", 0.10),
+    ("lbp", "LBP texture", "lbp_grid3_P8_R1", LBPDescriptor(), "chi2", 0.20),
+    ("hog", "HOG shape", "hog_o9_c16x16_b2x2", HOGDescriptor(), "l2", 0.70),
+    ("cld", "MPEG-7 Color Layout", "cld_6_3_3", ColorLayoutDescriptor(), "l2", 0.1),
+    ("ehd", "MPEG-7 Edge Histogram", "ehd_4x4_e5", EdgeHistogramDescriptor(), "l1", 0.1),
+    ("scd", "MPEG-7 Scalable Color", "scd_16_4_4", ScalableColorDescriptor(), "l1", 0.1),
+]
+
+if ResNetDescriptor is not None:
+    DESCRIPTOR_CONFIG.append(
+        ("resnet", "Semantic features (ResNet18)", "resnet18_512d", ResNetDescriptor(), "cosine", 8.0)
+    )
+
+DESCRIPTOR_ALIASES = {
+    "hsv": "color",
+    "texture": "lbp",
+    "shape": "hog",
+    "color-layout": "cld",
+    "edge-histogram": "ehd",
+    "scalable-color": "scd",
+}
 
 
-# ── Cache ─────────────────────────────────────────────────────────────────────
+class IndexUnavailable(RuntimeError):
+    """Raised when a dataset has no built descriptor index."""
+
+
+class DescriptorUnavailable(ValueError):
+    """Raised when a requested descriptor is not present in the index."""
+
+
+def _dataset_index_file(dataset: str) -> str:
+    return INDEX_FILES.get(dataset, f"{dataset}.pkl")
+
+
+def _relative_id(raw_path: str, dataset: str) -> str | None:
+    """Normalize index keys to IDs relative to one dataset's image directory."""
+    parts = [part for part in str(raw_path).replace("\\", "/").split("/") if part]
+    if parts and parts[0] == "data":
+        parts.pop(0)
+    if parts and parts[0] in INDEX_FILES:
+        if parts[0] != dataset:
+            return None
+        parts.pop(0)
+    return "/".join(parts) if parts else None
+
+
+def _candidate_id(raw_path: str, dataset: str) -> str:
+    parts = [part for part in str(raw_path).replace("\\", "/").split("/") if part]
+    if parts and parts[0] == "data":
+        parts.pop(0)
+        if parts and parts[0] == dataset:
+            parts.pop(0)
+    return "/".join(parts)
+
 
 class _IndexCache:
+    """Loads each dataset once and keeps its signatures in aligned NumPy matrices."""
+
     def __init__(self):
-        self.loaded = False
-        self.descriptors = []   # list of dicts
-        self.all_paths = []     # ordered image IDs
-        self.n = 0
+        self._datasets: dict[str, dict] = {}
 
-    def ensure_loaded(self):
-        if self.loaded:
-            return
-        raw_index = load_index()
+    def ensure_loaded(self, dataset: str = "objects") -> dict:
+        if dataset in self._datasets:
+            return self._datasets[dataset]
 
-        # Determine which descriptors are available in the index
+        try:
+            raw_index = load_index(_dataset_index_file(dataset))
+        except FileNotFoundError:
+            raw_index = {}
+
         available = []
-        for desc_key, descriptor, dist_type, weight in DESCRIPTOR_CONFIG:
-            if desc_key in raw_index and len(raw_index[desc_key]) > 0:
-                available.append((desc_key, descriptor, dist_type, weight))
+        for descriptor_id, label, key, descriptor, distance, weight in DESCRIPTOR_CONFIG:
+            raw_signatures = raw_index.get(key)
+            if not raw_signatures:
+                continue
 
-        if not available:
-            self.loaded = True
-            return
+            clean_signatures = {}
+            for raw_path, vector in raw_signatures.items():
+                image_id = _relative_id(raw_path, dataset)
+                if image_id is not None:
+                    clean_signatures[image_id] = np.asarray(vector, dtype=np.float32).reshape(-1)
+            if not clean_signatures:
+                continue
 
-        # Find common image paths across all available descriptors
-        path_sets = []
-        for desc_key, _, _, _ in available:
-            clean = [_clean_id(p) for p in raw_index[desc_key].keys()]
-            path_sets.append(set(clean))
-
-        common = path_sets[0]
-        for s in path_sets[1:]:
-            common &= s
-
-        self.all_paths = sorted(common)
-        self.n = len(self.all_paths)
-
-        # Build aligned matrices for each descriptor
-        for desc_key, descriptor, dist_type, weight in available:
-            clean_map = {_clean_id(p): v for p, v in raw_index[desc_key].items()}
-            vectors = [clean_map[p] for p in self.all_paths]
-            matrix = np.array(vectors, dtype=np.float32)
-
-            info = {
-                "key": desc_key,
-                "matrix": matrix,
-                "dist_type": dist_type,
+            paths = sorted(clean_signatures)
+            matrix = np.stack([clean_signatures[path] for path in paths])
+            if not np.isfinite(matrix).all():
+                raise ValueError(f"Index {key!r} contains NaN or infinite values")
+            available.append({
+                "id": descriptor_id,
+                "label": label,
+                "key": key,
                 "descriptor": descriptor,
+                "dist_type": distance,
                 "weight": weight,
-            }
-            # Precompute squared norms for L2
-            if dist_type == "l2":
-                info["norms_sq"] = np.sum(matrix ** 2, axis=1)
+                "paths": paths,
+                "positions": {path: i for i, path in enumerate(paths)},
+                "matrix": matrix,
+            })
 
-            self.descriptors.append(info)
+        state = {
+            "descriptors": available,
+            "count": max((len(info["paths"]) for info in available), default=0),
+            "keys": [info["key"] for info in available],
+        }
+        self._datasets[dataset] = state
+        return state
 
-        self.loaded = True
+    def reset(self, dataset: str | None = None) -> None:
+        if dataset is None:
+            self._datasets.clear()
+        else:
+            self._datasets.pop(dataset, None)
+
+    # Compatibility views used by the existing evaluation and benchmark scripts.
+    @property
+    def descriptors(self) -> list[dict]:
+        return self.ensure_loaded("objects")["descriptors"]
+
+    @property
+    def all_paths(self) -> list[str]:
+        descriptors = self.descriptors
+        if not descriptors:
+            return []
+        paths = set(descriptors[0]["paths"])
+        for info in descriptors[1:]:
+            paths.intersection_update(info["paths"])
+        return sorted(paths)
+
+    @property
+    def n(self) -> int:
+        return len(self.all_paths)
+
+    @property
+    def descs(self) -> dict[str, dict]:
+        return {info["key"]: info for info in self.descriptors}
 
 
 _cache = _IndexCache()
 
 
-def _clean_id(raw_path: str) -> str:
-    p = raw_path.replace("\\", "/")
-    for prefix in ("objects/", "mirflickr/"):
-        if p.startswith(prefix):
-            p = p[len(prefix):]
-            break
-    return p
+def get_index_status(dataset: str = "objects") -> dict:
+    """Return the descriptors available to the API for one dataset."""
+    state = _cache.ensure_loaded(dataset)
+    by_id = {info["id"]: info for info in state["descriptors"]}
+    return {
+        "indexed": bool(state["descriptors"]),
+        "indexed_count": state["count"],
+        "descriptors": [
+            {
+                "id": descriptor_id,
+                "label": label,
+                "key": key,
+                "available": descriptor_id in by_id,
+            }
+            for descriptor_id, label, key, *_rest in DESCRIPTOR_CONFIG
+        ],
+    }
 
 
-# ── Vectorized distance computation ──────────────────────────────────────────
+def _compute_distances(
+    query: np.ndarray,
+    info: dict,
+    rows: np.ndarray | None = None,
+) -> np.ndarray:
+    q = np.asarray(query, dtype=np.float32).reshape(-1)
+    matrix = info["matrix"] if rows is None else info["matrix"][rows]
+    distance_type = info["dist_type"]
 
-def _compute_distances(query: np.ndarray, info: dict) -> np.ndarray:
-    q = query.astype(np.float32)
-    matrix = info["matrix"]
-    dt = info["dist_type"]
-
-    if dt == "chi2":
-        diff = matrix - q
-        summ = matrix + q + 1e-10
-        return np.sum(diff ** 2 / summ, axis=1)
-    elif dt == "l1":
+    if matrix.shape[1] != q.size:
+        raise ValueError(
+            f"Descriptor {info['key']} has {matrix.shape[1]} indexed values but "
+            f"the query produced {q.size}. Rebuild the index with matching descriptor settings."
+        )
+    if distance_type == "chi2":
+        difference = matrix - q
+        return 0.5 * np.sum(difference ** 2 / (matrix + q + 1e-10), axis=1)
+    if distance_type == "l1":
         return np.sum(np.abs(matrix - q), axis=1)
-    else:  # l2 via BLAS
-        q_nsq = np.dot(q, q)
-        dots = matrix @ q
-        dsq = info["norms_sq"] + q_nsq - 2.0 * dots
-        np.maximum(dsq, 0.0, out=dsq)
-        return np.sqrt(dsq)
+    if distance_type == "cosine":
+        similarities = matrix @ q
+        return np.maximum(0.0, 0.5 * (1.0 - similarities))
+
+    q_norm = np.dot(q, q)
+    dots = matrix @ q
+    squared = np.sum(matrix ** 2, axis=1) + q_norm - 2.0 * dots
+    np.maximum(squared, 0.0, out=squared)
+    return np.sqrt(squared)
 
 
-# ── Main search ──────────────────────────────────────────────────────────────
+def _scalar_distance(name: str):
+    if name == "chi2":
+        return lambda left, right: float(0.5 * np.sum((left - right) ** 2 / (left + right + 1e-10)))
+    if name == "l1":
+        return lambda left, right: float(np.sum(np.abs(left - right)))
+    if name == "cosine":
+        return lambda left, right: float(max(0.0, 0.5 * (1.0 - np.dot(left, right))))
+    return lambda left, right: float(np.linalg.norm(left - right))
 
-_DESCRIPTOR_KEYS = {
-    "color": {"hsv_8_4_4", "rgb_8_8_8"},
-    "hsv": {"hsv_8_4_4"},
-    "rgb": {"rgb_8_8_8"},
-    "texture": {"lbp_P24_R3"},
-    "lbp": {"lbp_P24_R3"},
-    "shape": {"hog_o9_c8x8_b2x2"},
-    "hog": {"hog_o9_c8x8_b2x2"},
-}
+
+def _selected_descriptors(state: dict, requested: list[str] | None) -> list[dict]:
+    available = state["descriptors"]
+    if not available:
+        raise IndexUnavailable("No visual index is available for this dataset. Build it with scripts/build_index.py.")
+    if not requested or any(str(name).lower() == "auto" for name in requested):
+        selected = available
+    else:
+        ids = set()
+        unknown = []
+        for requested_id in requested:
+            key = DESCRIPTOR_ALIASES.get(str(requested_id).lower(), str(requested_id).lower())
+            matches = [info for info in DESCRIPTOR_CONFIG if info[0] == key or info[2] == key]
+            if not matches:
+                unknown.append(requested_id)
+                continue
+            ids.add(matches[0][0])
+        if unknown:
+            raise DescriptorUnavailable(f"Unknown descriptor(s): {', '.join(map(str, unknown))}")
+        selected = [info for info in available if info["id"] in ids]
+        unavailable = ids - {info["id"] for info in selected}
+        if unavailable:
+            labels = [next(spec[1] for spec in DESCRIPTOR_CONFIG if spec[0] == name) for name in unavailable]
+            raise DescriptorUnavailable(
+                "Not indexed: " + ", ".join(labels) + ". Build the dataset index to enable them."
+            )
+    if not selected:
+        raise IndexUnavailable("No visual index is available for this dataset. Build it with scripts/build_index.py.")
+    return selected
 
 
 def _optimized_search(
@@ -149,89 +271,62 @@ def _optimized_search(
     k: int,
     descriptors: list[str] | None = None,
     candidate_ids: list[str] | set[str] | None = None,
+    dataset: str = "objects",
 ) -> list[dict]:
-    """
-    Multi-descriptor weighted fusion search.
+    """Rank image IDs by the weighted, normalized distance of selected descriptors."""
+    state = _cache.ensure_loaded(dataset)
+    infos = _selected_descriptors(state, descriptors)
 
-    For each descriptor:
-      1. Extract query vector
-      2. Compute distances to all images (vectorized)
-      3. Normalize distances to [0, 1] using min-max
-
-    Fusion:
-      4. Weighted sum of normalized distances
-      5. Top-k by ascending fused score (0 = best match)
-    """
-    _cache.ensure_loaded()
-    if not _cache.descriptors:
-        raise RuntimeError("Index vide. Lance : python scripts/build_index.py")
-
-    selected_keys = None
-    if descriptors and "auto" not in descriptors:
-        selected_keys = set()
-        for name in descriptors:
-            keys = _DESCRIPTOR_KEYS.get(name.lower())
-            if keys is None:
-                raise ValueError(f"Descripteur inconnu : {name}")
-            selected_keys.update(keys)
-
-    infos = [
-        info for info in _cache.descriptors
-        if selected_keys is None or info["key"] in selected_keys
-    ]
-    if not infos:
-        raise RuntimeError("Aucun descripteur demandé n'est disponible dans l'index.")
-
-    n = _cache.n
-    if candidate_ids is None:
-        candidate_indices = np.arange(n)
-    else:
-        candidates = {_clean_id(path) for path in candidate_ids}
-        candidate_indices = np.array(
-            [i for i, path in enumerate(_cache.all_paths) if _clean_id(path) in candidates],
-            dtype=np.intp,
-        )
-    if candidate_indices.size == 0 or k <= 0:
+    common_paths = set(infos[0]["paths"])
+    for info in infos[1:]:
+        common_paths.intersection_update(info["paths"])
+    if candidate_ids is not None:
+        candidates = {_candidate_id(path, dataset) for path in candidate_ids}
+        common_paths.intersection_update(candidates)
+    if not common_paths or k <= 0:
         return []
 
-    fused = np.zeros(candidate_indices.size, dtype=np.float64)
-    total_weight = 0.0
+    paths = sorted(common_paths)
+    if len(infos) == 1 and infos[0]["id"] != "resnet" and candidate_ids is None and len(paths) <= 12000:
+        info = infos[0]
+        query = info["descriptor"].extract(image)
+        tree = info.get("tree")
+        if tree is None:
+            signatures = {path: info["matrix"][position] for position, path in enumerate(info["paths"])}
+            tree = VPTree(signatures, _scalar_distance(info["dist_type"]))
+            info["tree"] = tree
+        return [
+            {"id": image_id, "distance": round(float(distance), 6)}
+            for image_id, distance in tree.search(query, k=min(int(k), len(paths)))
+        ]
+
+    total_distance = np.zeros(len(paths), dtype=np.float64)
+    weight_sum = 0.0
 
     for info in infos:
-        query_vec = info["descriptor"].extract(image)
-        dists = _compute_distances(query_vec, info)[candidate_indices]
-        # Min-max normalization to [0, 1]
-        d_min = dists.min()
-        d_max = dists.max()
-        span = d_max - d_min
-        if span > 1e-10:
-            normed = (dists - d_min) / span
-        else:
-            normed = np.zeros(candidate_indices.size, dtype=np.float32)
+        rows = np.fromiter((info["positions"][path] for path in paths), dtype=np.intp, count=len(paths))
+        query = info["descriptor"].extract(image)
+        distances = _compute_distances(query, info, rows)
+        low, high = float(distances.min()), float(distances.max())
+        normalized = (distances - low) / max(high - low, 1e-10)
+        weight = info["weight"]
+        total_distance += weight * normalized
+        weight_sum += weight
 
-        w = info["weight"]
-        fused += w * normed
-        total_weight += w
+    if weight_sum:
+        total_distance /= weight_sum
 
-    # Average by total weight
-    if total_weight > 0:
-        fused /= total_weight
-
-    # Top-k
-    actual_k = min(k, candidate_indices.size)
-    top_idx = np.argpartition(fused, actual_k - 1)[:actual_k]
-    sorted_idx = top_idx[np.argsort(fused[top_idx])]
-
+    count = min(int(k), len(paths))
+    if count < len(paths):
+        selected = np.argpartition(total_distance, count - 1)[:count]
+        selected = selected[np.argsort(total_distance[selected], kind="stable")]
+    else:
+        selected = np.argsort(total_distance, kind="stable")
     return [
-        {
-            "id": _cache.all_paths[candidate_indices[i]],
-            "distance": round(float(fused[i]), 6),
-        }
-        for i in sorted_idx
+        {"id": paths[index], "distance": round(float(total_distance[index]), 6)}
+        for index in selected
     ]
 
-
-# ── Public API ───────────────────────────────────────────────────────────────
 
 def search(
     image_path: str,
@@ -240,66 +335,40 @@ def search(
     k: int = 10,
     index_file: str = "index.pkl",
 ) -> list[tuple[str, float]]:
-    img_path = Path(image_path)
-    if not img_path.exists():
-        raise FileNotFoundError(f"Image introuvable : {image_path}")
-    image = Image.open(img_path).convert("RGB")
+    image_path_obj = Path(image_path)
+    if not image_path_obj.exists():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    with Image.open(image_path_obj) as source:
+        image = source.convert("RGB")
     results = _optimized_search(image, k, [descriptor_name])
-    return [(r["id"], r["distance"]) for r in results]
+    return [(result["id"], result["distance"]) for result in results]
 
 
 def visual_search(
     dataset: str,
     query_image_id: str,
-    descriptors: list[str],
+    descriptors: list[str] | None,
     k: int = 20,
     candidate_ids: list[str] | set[str] | None = None,
 ) -> list[dict]:
-    """
-    Recherche visuelle à partir d'une image déjà dans la base.
-    Appelée par POST /search de l'API.
-
-    Args:
-        dataset         : nom du dataset ('objects').
-        query_image_id  : chemin relatif de l'image dans data/ (ex: 'accordion/image_0001.jpg').
-        descriptors     : liste de noms de descripteurs (ex: ['color', 'texture']).
-        k               : nombre de résultats.
-        candidate_ids   : restreindre la recherche à ces identifiants (optionnel).
-
-    Returns:
-        Liste de dicts {"id": str, "distance": float}.
-    """
-    # Résoudre le chemin complet de l'image requête
-    clean_id = query_image_id.replace("\\", "/")
-    if clean_id.startswith(f"{dataset}/"):
-        clean_id = clean_id[len(dataset) + 1:]
-    img_path = DATA_DIR / dataset / clean_id
-    if not img_path.exists():
-        raise FileNotFoundError(f"Image introuvable : {img_path}")
-    image = Image.open(img_path).convert("RGB")
-    return _optimized_search(image, k, descriptors, candidate_ids)
+    """Search from an image already stored in the selected dataset."""
+    root = DATASET_DIRS.get(dataset, DATA_DIR / dataset).resolve()
+    query_path = (root / query_image_id.replace("\\", "/")).resolve()
+    if root not in query_path.parents or not query_path.is_file():
+        raise FileNotFoundError(f"Image not found in dataset {dataset}: {query_image_id}")
+    with Image.open(query_path) as source:
+        image = source.convert("RGB")
+    return _optimized_search(image, k, descriptors, candidate_ids, dataset)
 
 
 def visual_search_image(
     dataset: str,
     image_bytes: bytes,
-    descriptors: list[str],
+    descriptors: list[str] | None,
     k: int = 20,
     candidate_ids: list[str] | set[str] | None = None,
 ) -> list[dict]:
-    """
-    Recherche visuelle à partir d'une image uploadée (bytes bruts).
-    Appelée par POST /search/upload de l'API.
-
-    Args:
-        dataset       : nom du dataset ('objects').
-        image_bytes   : contenu binaire de l'image uploadée.
-        descriptors   : liste de noms de descripteurs.
-        k             : nombre de résultats.
-        candidate_ids : restreindre la recherche à ces identifiants (optionnel).
-
-    Returns:
-        Liste de dicts {"id": str, "distance": float}.
-    """
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    return _optimized_search(image, k, descriptors, candidate_ids)
+    """Search from an uploaded image without storing the upload on disk."""
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        image = source.convert("RGB")
+    return _optimized_search(image, k, descriptors, candidate_ids, dataset)

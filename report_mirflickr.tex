@@ -1,0 +1,455 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{amsmath,amssymb,graphicx,booktabs,array,microtype,xcolor}
+\usepackage{xurl}
+\usepackage{hyperref,listings,float,fancyhdr}
+\hypersetup{colorlinks=true,linkcolor=black,citecolor=teal,urlcolor=blue,
+  pdftitle={Multimodal Image Retrieval on MIRFLICKR-25K},
+  pdfauthor={Ines Besbes and Nesrine Hamrouni}}
+\definecolor{codebg}{rgb}{0.97,0.97,0.97}
+\definecolor{codeblue}{rgb}{0.13,0.13,0.7}
+\definecolor{codegreen}{rgb}{0,0.45,0}
+\definecolor{codegray}{rgb}{0.45,0.45,0.45}
+\lstset{backgroundcolor=\color{codebg},basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{codeblue}\bfseries,commentstyle=\color{codegray}\itshape,
+  stringstyle=\color{codegreen},breaklines=true,keepspaces=true,numbers=left,
+  numberstyle=\tiny\color{codegray},frame=single,rulecolor=\color{gray},
+  captionpos=b}
+\newcommand{\safefigure}[3]{%
+  \begin{figure}[H]\centering
+  \IfFileExists{#1}{\includegraphics[width=#2]{#1}}%
+    {\fbox{\parbox[c][3cm][c]{0.82\textwidth}{\centering
+      Screenshot to add: \texttt{\detokenize{#1}}}}}
+  \caption{#3}
+  \end{figure}}
+\pagestyle{fancy}
+\setlength{\headheight}{15pt}
+\fancyhf{}
+\fancyhead[L]{\small\itshape Multimodal Image Retrieval}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\begin{document}
+
+\begin{titlepage}
+\centering
+\vspace*{1.5cm}
+{\Large Higher School of Communication of Tunis\par}
+\vspace{2cm}
+\rule{\linewidth}{0.6mm}\\[0.4cm]
+{\huge\bfseries Multimodal Image Retrieval\\on MIRFLICKR-25K\par}
+\rule{\linewidth}{0.6mm}\\[2cm]
+{\large Project report\par}
+\vfill
+\begin{minipage}{0.46\textwidth}
+\begin{flushleft}\large
+\emph{Authors:}\\
+\textbf{BESBES In\`es}\\
+\textbf{HAMROUNI Nesrine}
+\end{flushleft}
+\end{minipage}
+\hfill
+\begin{minipage}{0.46\textwidth}
+\begin{flushright}\large
+\emph{Faculty adviser:}\\
+\textbf{TEBOURBI Riadh}\\[0.5cm]
+\emph{Academic year:}\\
+\textbf{2026--2027}
+\end{flushright}
+\end{minipage}
+\end{titlepage}
+
+\begin{abstract}
+This report presents a multimodal image retrieval system whose primary collection
+is MIRFLICKR-25K. It supports visual search from an image, text search over
+per-image Flickr tags and topic annotations, and combined image--text search.
+The required visual pipeline computes HSV color, LBP texture, HOG shape, and
+three MPEG-7 descriptors (CLD, EHD, and SCD). ResNet-18 is an optional
+experimental extension in the implementation and is outside the report's
+required descriptor scope.
+FastAPI serves the application, Elasticsearch indexes text metadata, and
+Reciprocal Rank Fusion combines independent text and image lists for OR queries.
+
+The visual index contains 25,000 images and 25,000 signatures for each of the
+six required descriptor keys. Text ingestion stores Flickr tags together with
+supplied topic annotations. Image-only, text-only, and combined paths have been
+checked. These checks confirm that the pipeline runs; they are not a
+quantitative evaluation of retrieval quality. Formal precision and recall
+measurements on MIRFLICKR annotations remain future work.
+\end{abstract}
+\noindent\textbf{Keywords:} MIRFLICKR-25K; image retrieval; HSV; LBP; HOG;
+MPEG-7; Elasticsearch; fuzzy text search; FastAPI.
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{Introduction}
+\subsection{Motivation and objectives}
+Text retrieval can find images whose tags or annotations match a concept.
+Content-based image retrieval (CBIR) ranks images by visual similarity to an
+example image. The project combines both approaches and supports image-only,
+text-only, and combined queries.
+
+This report focuses on MIRFLICKR-25K, which replaces the Objects collection as
+the main dataset discussed here. Objects remains supported as a second dataset.
+The objectives are to build reusable visual signatures, index available tags
+and annotations, implement combined retrieval, and expose the system through a
+web interface and REST API.
+
+\section{Dataset}
+\subsection{MIRFLICKR-25K collection}
+MIRFLICKR-25K is a collection of 25,000 Flickr images introduced for multimedia
+retrieval research~\cite{huiskes2008}. In this project, extracted files are
+stored under \path{data/mirflickr25k/}. Images are in
+\path{data/mirflickr25k/mirflickr/}; topic annotation files are in
+\path{data/mirflickr25k/annotations/}; per-image tags are in
+\path{data/mirflickr25k/mirflickr/meta/tags/}.
+
+The application uses the full collection, not the older thumbnail directory
+\path{data/mirflickr/}. The local scan and visual index both contain 25,000
+images.
+
+\subsection{Text metadata}
+The ingestion script reads Flickr tags and supplied topic annotation files.
+Annotation filenames become topic labels, and image numbers in those files
+associate labels with image IDs. Elasticsearch documents store dataset ID,
+image ID, filename-derived title, topic words, and tags. EXIF fields are not
+currently used as searchable metadata. Tag and annotation coverage varies, so
+missing text results do not imply visual irrelevance.
+
+\subsection{Objects collection}
+Objects remains available in the application but is not the focus of this
+report's counts, screenshots, or evaluation. Results from earlier Objects
+experiments must not be presented as MIRFLICKR-25K results.
+
+\section{Data Preparation}
+Data preparation has two parts: building visual signatures from the images and
+ingesting tags and topic annotations for text search. The MIRFLICKR-25K files
+are stored under \path{data/mirflickr25k/}. The collection contains 25,000
+images in \path{data/mirflickr25k/mirflickr/}; annotation files and per-image
+tag files are stored under \path{data/mirflickr25k/annotations/} and
+\path{data/mirflickr25k/mirflickr/meta/tags/}, respectively.
+
+The required visual index uses six descriptor keys: HSV, LBP, HOG, and the
+three MPEG-7 descriptors (CLD, EHD, and SCD). Each has 25,000 signatures in the
+generated MIRFLICKR index. ResNet-18 remains available in the implementation
+as an optional extension but is not included in this report's required
+descriptor analysis. Text metadata is ingested separately into Elasticsearch.
+
+\subsection{Dataset Cleansing and Identification}
+The image scan reads the 25,000 JPEG files from
+\path{data/mirflickr25k/mirflickr/}. Each image is opened and converted to RGB
+before visual feature extraction. If an image cannot be read, the indexing
+script reports the error and skips that file.
+
+Unlike the Objects collection, MIRFLICKR images are not arranged in
+category-specific folders. The image filename, such as \path{im49.jpg},
+provides its numeric identifier; it is used to associate the image with its
+tag file and any topic annotations. Topic labels come from the supplied
+annotation files rather than from a parent directory name.
+
+Image paths are normalized to use forward slashes so identifiers remain
+consistent across Windows, Linux, and Docker. The application uses IDs such as
+\path{mirflickr/im49.jpg} when matching visual-index entries, Elasticsearch
+documents, and image files. During index loading, the dataset prefix is
+normalized to align stored feature paths with these application-level IDs.
+
+\section{System Architecture}
+Visual preparation scans images, extracts selected descriptors, and writes
+vectors to \path{index/mirflickr.pkl}. Text preparation reads Flickr tags and
+topic annotations and indexes one Elasticsearch document per image. The visual
+index is generated data excluded from Git and must be built from local dataset
+files on a new machine.
+
+At query time, FastAPI loads and caches visual signatures on first use. Text
+queries go to Elasticsearch. Image queries are encoded with the same descriptor
+implementations used during indexing. The API returns ranked results as image
+IDs, scores, and URLs.
+
+\begin{figure}[H]
+\centering
+\fbox{\begin{minipage}{0.88\textwidth}\centering
+\textbf{Offline:}\\
+MIRFLICKR images $\longrightarrow$ descriptor extraction
+$\longrightarrow$ \path{index/mirflickr.pkl}\\[0.25cm]
+Flickr tags and topic annotations $\longrightarrow$ Elasticsearch\\[0.4cm]
+\textbf{Online:}\\
+image and/or text query $\longrightarrow$ visual and/or text retrieval
+$\longrightarrow$ AND filtering or OR rank fusion
+$\longrightarrow$ API response and web results
+\end{minipage}}
+\caption{Offline indexing and online retrieval paths.}
+\label{fig:architecture}
+\end{figure}
+
+\section{Visual Descriptors and Index}
+\subsection{Active descriptors}
+The report covers six required descriptor keys. HSV, LBP, and HOG use a
+$3\times3$ spatial grid, while CLD, EHD, and SCD provide the three MPEG-7
+representations. Feature sizes below follow the current code.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.25\textwidth}p{0.34\textwidth}rll}
+\toprule
+\textbf{Index key} & \textbf{Representation} & \textbf{Dimensions}
+& \textbf{Distance} & \textbf{Weight}\\
+\midrule
+\path{hsv_grid3_8_4_4} & HSV histogram, $3\times3$ grid & 1,152 & $\chi^2$ & 0.10\\
+\path{lbp_grid3_P8_R1} & Uniform LBP, $P=8$, $R=1$ & 90 & $\chi^2$ & 0.20\\
+\path{hog_o9_c16x16_b2x2} & HOG, 9 orientations & 1,764 & $L_2$ & 0.70\\
+\path{cld_6_3_3} & MPEG-7 Color Layout (CLD) & 12 & $L_2$ & 0.10\\
+\path{ehd_4x4_e5} & MPEG-7 Edge Histogram (EHD) & 85 & $L_1$ & 0.10\\
+\path{scd_16_4_4} & MPEG-7 Scalable Color (SCD) & 256 & $L_1$ & 0.10\\
+\bottomrule
+\end{tabular}
+\caption{Active descriptors, dimensions, distances, and configured fusion weights.}
+\label{tab:descriptors}
+\end{table}
+
+The RGB descriptor class remains in source code, but it is not part of the
+active descriptor configuration or MIRFLICKR index. It is not counted as an
+available search descriptor here. ResNet-18 is implemented as an optional
+experimental feature, but it is excluded from the required descriptor set and
+the analysis in this report.
+
+\subsection{Descriptor summary}
+\begin{description}
+\item[HSV color.] Images are resized to $128\times128$ and divided into nine
+cells. Each cell has a normalized $8\times4\times4$ HSV histogram, giving
+$9\times128=1{,}152$ components~\cite{swain1991}.
+\item[LBP texture.] Grayscale images are resized to $128\times128$. Uniform LBP
+histograms with $P=8$ and $R=1$ are computed for each cell. Ten bins per cell
+give 90 components~\cite{ojala2002}.
+\item[HOG shape.] Grayscale images are resized to $128\times128$. HOG uses nine
+orientations, $16\times16$ pixels per cell, and $2\times2$ cells per block,
+giving $7\times7\times36=1{,}764$ components~\cite{dalal2005}.
+\item[MPEG-7.] CLD represents coarse spatial color with DCT coefficients; EHD
+represents edge-type distribution across image regions; SCD represents an HSV
+histogram with a Haar transform. The implementations follow the descriptors'
+main principles in floating point; they do not claim bit-exact output from
+normative reference software~\cite{manjunath2001,iso15938}.
+\end{description}
+
+\subsection{Index format}
+The pickle file maps descriptor keys to image IDs and feature vectors:
+\[
+\mathrm{Index}=\{\mathrm{descriptor}:
+\{\mathrm{imageID}\mapsto\mathbf{v}\in\mathbb{R}^{D}\}\}.
+\]
+The report-scope index has 25,000 vectors for each of six required keys, or
+150,000 signatures. The local pickle may also contain the optional ResNet
+signatures, which are excluded from the report's descriptor count. The API
+stacks vectors into aligned NumPy matrices. The file is
+\path{index/mirflickr.pkl}; it is locally generated and not committed to Git.
+
+\section{Retrieval and Fusion}
+\subsection{Image-only search}
+For descriptor $d$, the system computes query distances to all candidates.
+Distances are min--max normalized over the candidate set:
+\[
+\widehat{\delta}_d(q,x)=
+\frac{\delta_d(q,x)-\min_x\delta_d(q,x)}
+{\max_x\delta_d(q,x)-\min_x\delta_d(q,x)}.
+\]
+The weighted score is
+\[
+S(q,x)=\frac{\sum_{d\in D}w_d\,\widehat{\delta}_d(q,x)}
+{\sum_{d\in D}w_d},
+\]
+and images are returned in ascending score order. A zero-range vector is
+protected against division by zero.
+
+The configured weights are not learned from a MIRFLICKR relevance study.
+MIRFLICKR calibration is needed before treating these settings as optimal.
+Current ranking does not use the category-vote reranking described in the
+earlier Objects-focused report. The report's descriptor analysis uses the six
+required descriptors; the optional ResNet extension is excluded.
+
+\subsection{Text-only search}
+Elasticsearch searches \path{category_words}, \path{tags}, and \path{title}.
+Topic words receive a field boost of 3, tags a boost of 2, and title its default
+boost. The analyzer lowercases text, folds accents, and applies the Porter
+stemmer. The query uses \path{fuzziness=AUTO:4,8} for typo tolerance. Results
+are restricted to the selected dataset.
+
+\subsection{Combined search}
+\begin{itemize}
+\item \textbf{AND:} Elasticsearch obtains up to 200 text candidates. Visual
+search ranks those candidates with the selected descriptors.
+\item \textbf{OR:} Text and visual search run independently; their lists are
+combined with Reciprocal Rank Fusion (RRF)~\cite{cormack2009}:
+\[
+\mathrm{RRF}(x)=
+\sum_{m\in\{\mathrm{text},\mathrm{visual}\}}\frac{1}{60+r_m(x)},
+\]
+where $r_m(x)$ is the one-based rank of image $x$ in modality $m$.
+\end{itemize}
+RRF combines ranks rather than raw Elasticsearch scores and visual distances.
+It is used for OR fusion; AND uses text results as candidates for visual ranking.
+
+\section{Text Indexing, API, and Web Client}
+Each MIRFLICKR Elasticsearch document contains image ID, dataset ID, URL,
+filename-derived title, topic labels, and Flickr tags. Tags and annotations are
+complementary, but noisy or incomplete; they are not exhaustive captions. The
+default Elasticsearch index name is \path{cbir_images}.
+
+FastAPI serves search, image, dataset-status, and catalog routes. The main
+endpoints are \path{GET /health}, \path{GET /datasets}, \path{GET /catalog},
+\path{POST /search}, \path{POST /search/upload}, and \path{GET /images/...}.
+The web interface lets users select a dataset, choose visual descriptor
+families, set result count, enter keywords, choose or upload an image, and
+start another query from a result.
+
+\safefigure{screenshots/mirflickr-interface.png}{0.88\textwidth}
+{MIRFLICKR-25K search interface. Add a current screenshot at this path.}
+\safefigure{screenshots/mirflickr-results.png}{0.88\textwidth}
+{Example MIRFLICKR-25K results. Add a current results screenshot at this path.}
+
+\section{Reproducibility and Deployment}
+The following commands prepare the text and visual indexes and start the API.
+These commands build the six descriptors required for the report.
+\begin{lstlisting}[language=bash,caption={Local MIRFLICKR setup}]
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+docker compose up -d elasticsearch
+python scripts/ingest_es.py --dataset mirflickr
+
+python scripts/build_index.py --dataset mirflickr \
+  --descriptors hsv lbp hog cld ehd scd
+
+python -m uvicorn api.main:app --reload --port 8000
+\end{lstlisting}
+Open \path{http://localhost:8000/web/}; API documentation is at
+\path{http://localhost:8000/docs}. If port 8000 is unavailable, use another port
+such as \path{--port 8766} and update the browser URL accordingly.
+
+The repository includes Docker and Compose configuration for FastAPI and
+Elasticsearch. Data and generated index files are mounted into the API
+container. ResNet-18 remains an optional implementation extension and needs
+PyTorch and Torchvision, which the current Dockerfile does not install. The
+generated index is ignored by Git; build it on each new installation and
+restart the API so its in-memory cache reloads the index.
+
+\section{Verification, Limitations, and Future Work}
+\subsection{Implementation checks}
+The local MIRFLICKR index reports 25,000 images. Each of the six required
+descriptor keys has 25,000 signatures, for 150,000 signatures in the
+report-scope descriptor set. The local file may also contain the optional
+ResNet signatures. The following checks describe index coverage and software
+functionality, not retrieval relevance:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.31\textwidth}p{0.27\textwidth}p{0.32\textwidth}}
+\toprule
+\textbf{Check} & \textbf{Status} & \textbf{Meaning}\\
+\midrule
+Images in visual collection & 25,000 & Collection coverage\\
+Signatures per required descriptor & 25,000 & Six descriptors indexed\\
+Total required signatures & 150,000 & Excludes optional ResNet\\
+Image-only, text-only, AND, OR & Smoke-checked & Confirms query paths run\\
+Precision@10, recall, mAP & Not measured & No MIRFLICKR quality benchmark yet\\
+\bottomrule
+\end{tabular}
+\caption{Implementation checks and retrieval evaluation status.}
+\label{tab:evaluation-status}
+\end{table}
+
+The Objects precision figures from the earlier report are not MIRFLICKR
+measurements and are not carried over here.
+
+\subsection{Limitations}
+\begin{itemize}
+\item No MIRFLICKR precision@k, recall, mean average precision, or NDCG has yet
+been measured. Objects measurements must not be reused as MIRFLICKR results.
+\item Flickr tags are user supplied and annotation coverage varies. EXIF is
+not indexed by the current text pipeline.
+\item HSV, LBP, HOG, and MPEG-7 can match background, color, or texture instead
+of the main subject.
+\item Descriptor weights have not been calibrated with MIRFLICKR relevance
+judgments. Min--max normalized distances depend on the candidate set and are
+not probabilities.
+\end{itemize}
+
+\subsection{Future work}
+Define a reproducible query set from MIRFLICKR topic annotations and compare
+individual descriptors with fusion. Report precision@k, recall@k, and mean
+average precision for image-only search, and evaluate text-only and AND/OR
+search separately. Calibrate weights on a development split and report results
+on a held-out split. Further extensions include stronger image embeddings,
+evaluation of the optional ResNet-18 implementation~\cite{he2016}, improved tag
+normalization, optional EXIF indexing, and approximate-nearest-neighbor search
+for larger collections.
+
+\section{Conclusion}
+MIRFLICKR-25K is the primary collection in this report. Its visual index
+contains HSV, LBP, HOG, and MPEG-7 CLD/EHD/SCD signatures for all 25,000 images.
+The implementation also retains ResNet-18 as an optional extension outside
+the required scope. The application combines visual search with Flickr tags and
+topic annotations, supporting image-only, text-only, and combined retrieval.
+Text queries use Elasticsearch fuzzy matching, and OR queries use RRF.
+
+The implementation is operational, but MIRFLICKR quality has not been
+established with a formal relevance benchmark. Evaluation against supplied
+topic annotations is needed before making quantitative accuracy claims.
+
+\begin{thebibliography}{99}
+\bibitem{huiskes2008}
+M.~J. Huiskes and M.~S. Lew,
+\emph{The MIR Flickr Retrieval Evaluation},
+in \emph{Proceedings of the 1st ACM International Conference on Multimedia
+Information Retrieval}, 2008, pp.~39--43.
+doi: \href{https://doi.org/10.1145/1460096.1460104}
+{10.1145/1460096.1460104}.
+
+\bibitem{swain1991}
+M.~J. Swain and D.~H. Ballard, \emph{Color indexing},
+\emph{International Journal of Computer Vision}, vol.~7, no.~1,
+pp.~11--32, 1991.
+
+\bibitem{ojala2002}
+T.~Ojala, M.~Pietik{\"a}inen, and T.~M{\"a}enp{\"a}{\"a},
+\emph{Multiresolution gray-scale and rotation invariant texture classification
+with local binary patterns},
+\emph{IEEE Transactions on Pattern Analysis and Machine Intelligence},
+vol.~24, no.~7, pp.~971--987, 2002.
+
+\bibitem{dalal2005}
+N.~Dalal and B.~Triggs,
+\emph{Histograms of oriented gradients for human detection},
+in \emph{IEEE Conference on Computer Vision and Pattern Recognition}, 2005,
+pp.~886--893.
+
+\bibitem{manjunath2001}
+B.~S. Manjunath, J.-R. Ohm, V.~V. Vasudevan, and A.~Yamada,
+\emph{Color and texture descriptors},
+\emph{IEEE Transactions on Circuits and Systems for Video Technology},
+vol.~11, no.~6, pp.~703--715, 2001.
+
+\bibitem{iso15938}
+ISO/IEC 15938-3, \emph{Information Technology---Multimedia Content Description
+Interface---Part 3: Visual}, 2002.
+
+\bibitem{he2016}
+K.~He, X.~Zhang, S.~Ren, and J.~Sun,
+\emph{Deep residual learning for image recognition},
+in \emph{IEEE Conference on Computer Vision and Pattern Recognition}, 2016,
+pp.~770--778.
+
+\bibitem{cormack2009}
+G.~V. Cormack, C.~L. Clarke, and B.~B{\"u}ttcher,
+\emph{Reciprocal rank fusion outperforms Condorcet and individual rank learning
+methods},
+in \emph{Proceedings of the 32nd ACM SIGIR Conference}, 2009,
+pp.~758--759.
+\end{thebibliography}
+\end{document}

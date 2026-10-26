@@ -1,251 +1,94 @@
-# 🔍 Multimodal Content-Based Image Retrieval (CBIR) Engine
+# Framefind — Content Based Image Retrieval
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue?logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white" alt="FastAPI">
-  <img src="https://img.shields.io/badge/Elasticsearch-7.17-005571?logo=elasticsearch&logoColor=white" alt="Elasticsearch">
-  <img src="https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/OpenCV-5.0-5C3EE8?logo=opencv&logoColor=white" alt="OpenCV">
-  <img src="https://img.shields.io/badge/License-Academic-lightgrey" alt="License">
-</p>
+Framefind is a client/server image search app built around the requirements in pages 56–61 of the supplied multimedia indexing course. It searches Objects and MIRFLICKR-25K by text, by image, or with both query types. The web client lets you pick an image from the collection or upload one, choose visual descriptors, and click a result to run another search.
 
-This project is a **multimodal image and text search engine** developed as part of the *Massive Multimedia Indexing and Retrieval* course at **SUP'COM**. It combines **visual descriptors** (HSV, LBP, HOG) with **Elasticsearch** for text search, a **FastAPI** backend, and a **web interface** for interactive image retrieval.
+## What it does
 
----
+- **Image retrieval:** HSV colour, LBP texture, HOG shape, and MPEG-7 Color Layout, Edge Histogram, and Scalable Color descriptors.
+- **Text retrieval:** Elasticsearch matches category names, titles, and configured tags. Text metadata is available for Objects through `config/category_tags.json`.
+- **Combined retrieval:** AND filters text matches before visual reranking. OR merges text and image rankings with reciprocal rank fusion.
+- **Image catalog:** Browse and filter stored images before running a visual search.
+- **Search acceleration:** A VP-tree is built lazily for single-descriptor searches on collections up to 12,000 images. Multi-descriptor and larger searches use aligned NumPy matrices and partial top-k selection.
+- **API and web client:** FastAPI serves JSON endpoints, images, and the static browser app.
 
-## 📜 Table of Contents
+## Project layout
 
-- [📂 Project Architecture](#-project-architecture)
-- [🚀 How It Works](#-how-it-works)
-  - [Visual Feature Extraction](#1-visual-feature-extraction)
-  - [Elasticsearch Integration](#2-elasticsearch-integration)
-  - [FastAPI Backend](#3-fastapi-backend)
-  - [Web Interface](#4-web-interface)
-  - [Multimodal Fusion](#5-multimodal-fusion)
-- [📸 Features](#-features)
-- [🛠️ Technology Stack](#%EF%B8%8F-technology-stack)
-- [🔧 How to Run the Project](#-how-to-run-the-project)
-  - [Prerequisites](#prerequisites)
-  - [Clone the Repository](#1-clone-the-repository)
-  - [Build and Run with Docker Compose](#2-build-and-run-with-docker-compose)
-  - [Manual Local Execution](#3-manual-local-execution)
-  - [Access the Application](#4-access-the-application)
-- [📂 Folder Structure](#-folder-structure)
-- [🛡️ Environment Variables](#%EF%B8%8F-environment-variables)
-- [📊 Results](#-results)
-  - [Search by Text](#search-by-text)
-  - [Search by Image](#search-by-image)
-  - [Search by Text + Image](#search-by-text--image)
-- [🤝 Contributors](#-contributors)
-
----
-
-## 📂 Project Architecture
-
-```mermaid
-flowchart TD
-    User([👤 User]) --> UI[Web Interface]
-    UI --> API[FastAPI Backend]
-    API --> ES[(Elasticsearch)]
-    API --> Visual[Visual Search Engine]
-    Visual --> HSV[HSV Color Descriptor]
-    Visual --> LBP[LBP Texture Descriptor]
-    Visual --> HOG[HOG Shape Descriptor]
-    ES --> Fusion[Multimodal Fusion]
-    Visual --> Fusion
-    Fusion --> API
-    API --> UI
+```text
+api/                 FastAPI routes and request/response models
+config/              Search settings and Objects category tags
+data/objects/        Objects image collection
+data/mirflickr25k/   MIRFLICKR-25K images, tags, and annotations
+index/               Generated descriptor indexes (not committed)
+scripts/             Index building, Elasticsearch ingest, evaluation
+src/cbir/            Descriptors, ranking, fusion, and index structures
+web/                 Browser client
 ```
 
----
+## Run locally
 
-## 🚀 How It Works
+Install Python dependencies, then prepare the visual index and optional text index:
 
-### 1. **Visual Feature Extraction**
-- Extracts visual features from images using **3 descriptors**:
-  - **HSV**: Captures the color distribution of the image.
-  - **LBP**: Captures the texture patterns of the image.
-  - **HOG**: Captures the shape and edge information of the image.
-- These features are used to compare images and find visually similar ones.
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
-### 2. **Elasticsearch Integration**
-- Indexes all images with their **category names**, **tags**, and **titles** into Elasticsearch.
-- Supports **fuzzy matching**, **accent folding**, and **stemming** for accurate text search.
+# Build all classic and MPEG-7 descriptors for Objects.
+python scripts/build_index.py --dataset objects
 
-### 3. **FastAPI Backend**
-- Provides a **REST API** for handling search requests.
-- Users can search by **text**, **image**, or **both** and receive ranked results.
+# Optional: add the Objects categories and tags to Elasticsearch.
+docker compose up -d elasticsearch
+python scripts/ingest_es.py --root data/objects --dataset objects
 
-### 4. **Web Interface**
-- Built with **HTML, CSS, and JavaScript** (no heavy frameworks).
-- Supports **drag-and-drop image upload** and **keyword search**.
-- Click on any result image to search for similar images instantly.
-
-### 5. **Multimodal Fusion**
-- Combines text and visual search results using **Reciprocal Rank Fusion (RRF)**.
-- Supports **AND** mode (text filters → visual reranking) and **OR** mode (merged results from both).
-
----
-
-## 📸 Features
-
-- 🎯 **3 Visual Descriptors**: Color (HSV), Texture (LBP), Shape (HOG)
-- ⚡ **VP-Tree Acceleration**: Faster search using metric tree indexing
-- 🔤 **Text Search**: Elasticsearch with fuzzy matching and stemming
-- 🔀 **Multimodal Search**: Combine text + image queries (AND / OR)
-- 🖼️ **Image Upload**: Upload any image from your computer
-- 🔄 **Click to Re-search**: Click any result to search with that image
-- 🐳 **Docker Ready**: One-command deployment with Docker Compose
-
----
-
-## 🛠️ Technology Stack
-
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| **Feature Extraction** | OpenCV, scikit-image, NumPy | HSV, LBP, and HOG descriptors |
-| **Visual Index** | VP-Tree, Linear Search | Fast nearest-neighbor retrieval |
-| **Text Search** | Elasticsearch 7.17 | Full-text search with fuzzy matching |
-| **Backend** | FastAPI, Uvicorn | REST API server |
-| **Frontend** | HTML5, CSS3, JavaScript | Interactive web interface |
-| **Containerization** | Docker, Docker Compose | Easy deployment |
-
----
-
-## 🔧 How to Run the Project
-
-### Prerequisites
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
-- Python 3.10+ (only for manual execution without Docker)
-
-### 1. Clone the Repository
-```bash
-git clone https://github.com/nesrine414/projet-cbir.git
-cd projet-cbir
+uvicorn api.main:app --reload
 ```
 
-### 2. Build and Run with Docker Compose
-```bash
+Open `http://localhost:8000/web/`. API documentation is at `http://localhost:8000/docs`.
+
+If an Objects index already exists and you only want to add MPEG-7 signatures while keeping the other descriptors, run:
+
+```powershell
+python scripts/add_mpeg7_to_index.py objects
+```
+
+Build a visual index for the extracted MIRFLICKR-25K images with MPEG-7 descriptors:
+
+```powershell
+python scripts/build_index.py --dataset mirflickr --descriptors cld ehd scd
+python scripts/ingest_es.py --dataset mirflickr
+```
+
+The ingest command adds each image's Flickr tags and manual topic annotations to Elasticsearch. The app uses the 25K collection under `data/mirflickr25k`; the older thumbnail folder under `data/mirflickr` is ignored.
+
+## Docker
+
+Build the visual index on the host first so the generated file is available in `index/`, then run:
+
+```powershell
 docker compose up --build
 ```
 
-### 3. Manual Local Execution
+The Compose stack runs Elasticsearch and the FastAPI app. The local `data/` and `index/` directories are mounted into the app container.
 
-If you prefer to run without Docker:
+## API summary
 
-```bash
-# Create virtual environment
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # Linux/Mac
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | API and Elasticsearch status |
+| `GET` | `/datasets` | Image counts and indexed descriptor options |
+| `GET` | `/catalog?dataset=objects&q=butterfly` | Browse or filter stored images |
+| `POST` | `/search` | Text, stored-image, or combined search |
+| `POST` | `/search/upload` | Search using an uploaded image, optionally with text |
+| `GET` | `/images/{dataset}/{image_id}` | Serve an image from a collection |
 
-# Install dependencies
-pip install -r requirements.txt
+## Building indexes
 
-# Start Elasticsearch (via Docker)
-docker run -d --name es-cbir -p 9200:9200 -e "discovery.type=single-node" -e "xpack.security.enabled=false" elasticsearch:7.17.13
+`scripts/build_index.py` supports `objects` and `mirflickr`. Its default descriptor set is HSV, LBP, HOG, and the three MPEG-7 descriptors. ResNet is an optional extra and requires `torch` and `torchvision`.
 
-# Build the visual index (run once)
-python scripts/build_index.py
+Use `--append` when rebuilding selected signatures into an existing index. For example, this preserves other Objects descriptors while replacing the three MPEG-7 entries:
 
-# Index data into Elasticsearch (run once)
-python scripts/ingest_es.py
-
-# Start the API server
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+```powershell
+python scripts/build_index.py --dataset objects --descriptors cld ehd scd --append
 ```
 
-### 4. Access the Application
-
-| Service | URL |
-| :--- | :--- |
-| **Web Interface** | [http://localhost:8000/web/](http://localhost:8000/web/) |
-| **API Docs (Swagger)** | [http://localhost:8000/docs](http://localhost:8000/docs) |
-| **Elasticsearch** | [http://localhost:9200](http://localhost:9200) |
-
----
-
-## 📂 Folder Structure
-
-```
-projet-cbir/
-├── api/                     # FastAPI backend
-│   ├── main.py              # API routes
-│   └── schemas.py           # Request/response models
-│
-├── config/                  # Configuration files
-│   ├── category_tags.json   # Category tags and translations
-│   └── settings.py          # Environment settings
-│
-├── data/objects/             # Image dataset (Caltech-101)
-│
-├── index/                   # Precomputed visual index
-│   └── index.pkl            # Serialized feature signatures
-│
-├── scripts/                 # Offline pipelines
-│   ├── build_index.py       # Visual feature extraction
-│   ├── ingest_es.py         # Elasticsearch indexing
-│   └── benchmark.py         # Performance benchmarks
-│
-├── src/cbir/                # Core CBIR library
-│   ├── descriptors/         # HSV, LBP, HOG extractors
-│   ├── index/               # Linear search & VP-Tree
-│   ├── distances.py         # Distance functions
-│   ├── fusion.py            # Multimodal fusion (RRF)
-│   └── text_search.py       # Elasticsearch client
-│
-├── tests/                   # Unit tests
-├── web/                     # Frontend (HTML/CSS/JS)
-│
-├── docker-compose.yml       # Docker Compose config
-├── Dockerfile               # Docker image recipe
-└── requirements.txt         # Python dependencies
-```
-
----
-
-## 🛡️ Environment Variables
-
-Create a `.env` file from the example:
-
-```bash
-cp .env.example .env
-```
-
-```env
-ES_URL=http://localhost:9200
-ES_INDEX=cbir_images
-DATA_DIR=data/objects
-INDEX_DIR=index
-```
-
----
-
-## 📊 Results
-
-### Search by Text
-Enter keywords like **"watch"**, **"butterfly"**, or **"water lily"** to find matching images.
-
-### Search by Image
-Upload any image to find visually similar images from the database.
-
-### Search by Text + Image
-Combine a keyword and an uploaded image for **multimodal search**:
-- **AND mode**: Text narrows the results, then visual similarity reranks them.
-- **OR mode**: Merges both text and visual results using rank fusion.
-
-### Benchmark: Linear Search vs VP-Tree
-
-| Method | Avg Query Time | Speedup |
-| :--- | :---: | :---: |
-| **Linear Search** | ~18.5 ms | 1.0x |
-| **VP-Tree** | ~4.2 ms | **4.4x faster** |
-
----
-
-## 🤝 Contributors
-
-Project developed at **SUP'COM** (École Supérieure des Communications de Tunis):
-
-- **Inès Besbes** — Visual Search Engine & Indexing
-- **Nesrine Hamrouni** — API, Text Search & Multimodal Fusion
+Generated index files are ignored by Git. Restart the API after rebuilding an index so it reloads the updated signatures.
