@@ -12,7 +12,7 @@ python-multipart            # upload de fichiers (POST /search/upload)
 pydantic                    # validation des schémas JSON
 
 # ── Recherche textuelle (Partie B) ───────────────────────────────────────────
-elasticsearch==8.*          # client Python pour Elasticsearch
+elasticsearch==7.17.*       # client Python compatible avec Elasticsearch 7.17
 
 # ── Utilitaires ───────────────────────────────────────────────────────────────
 python-dotenv               # lecture du fichier .env

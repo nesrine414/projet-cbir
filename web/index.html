@@ -23,12 +23,21 @@
                     <select id="mode">
                         <option value="image" selected>Image</option>
                         <option value="text">Texte</option>
+                        <option value="combined">Texte + image</option>
+                    </select>
+                </label>
+                <label id="opwrap" hidden>Combiner les critères
+                    <select id="operator">
+                        <option value="AND">AND — doit correspondre aux deux</option>
+                        <option value="OR">OR — correspond à l’un ou l’autre</option>
                     </select>
                 </label>
                 <label>Base
                     <select id="dataset">
                         <option value="objects">Objects</option>
+                        <option value="mirflickr">MIRFLICKR</option>
                     </select>
+                    <small id="text-support">La recherche par mots-clés est disponible pour Objects.</small>
                 </label>
                 <fieldset id="descs" hidden>
                     <legend>Descripteurs de l'image</legend>
@@ -41,7 +50,7 @@
         </details>
 
         <form id="form" class="card">
-            <p class="lead">Choisissez une option de recherche :</p>
+            <p class="lead">Saisissez des mots-clés, choisissez une image, ou combinez les deux.</p>
 
             <div id="textbox" hidden>
                 <label>Mots-cles
@@ -77,7 +86,7 @@
         <section id="results" class="grid"></section>
     </main>
     <footer>Realise par : <span id="authors">Besbes Ines &amp; Hamrouni Nesrine</span></footer>
-    <script src="js/app.js"></script>
+    <script src="js/app.js?v=mirflickr-text-guard"></script>
 </body>
 
 </html>

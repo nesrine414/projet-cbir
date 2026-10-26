@@ -24,6 +24,10 @@ import numpy as np
 INDEX_DIR = Path(__file__).resolve().parents[3] / "index"
 
 
+class IndexNotFoundError(FileNotFoundError):
+    """Raised when a requested dataset signature index has not been built."""
+
+
 def save_index(index: dict, filename: str = "index.pkl") -> Path:
     """
     Sauvegarde l'index dans un fichier pickle.
@@ -61,9 +65,10 @@ def load_index(filename: str = "index.pkl") -> dict:
     path = INDEX_DIR / filename
 
     if not path.exists():
-        raise FileNotFoundError(
+        raise IndexNotFoundError(
             f"[store] Index introuvable : {path}\n"
-            "Lance d'abord : python scripts/build_index.py"
+            f"Lance d'abord : python scripts/build_index.py --dataset "
+            f"{'mirflickr' if filename == 'mirflickr.pkl' else 'objects'}"
         )
 
     with open(path, "rb") as f:

@@ -147,6 +147,8 @@ docker run -d --name es-cbir -p 9200:9200 -e "discovery.type=single-node" -e "xp
 
 # Build the visual index (run once)
 python scripts/build_index.py
+# Build a balanced 10,000-image MIRFLICKR sample index (run once)
+python scripts/build_index.py --dataset mirflickr --limit 10000
 
 # Index data into Elasticsearch (run once)
 python scripts/ingest_es.py
@@ -163,6 +165,10 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 | **API Docs (Swagger)** | [http://localhost:8000/docs](http://localhost:8000/docs) |
 | **Elasticsearch** | [http://localhost:9200](http://localhost:9200) |
 
+Check [http://localhost:8000/health](http://localhost:8000/health) to confirm the API can reach Elasticsearch. The `text_index` field is `false` until the text documents are loaded; create the index with `python scripts/ingest_es.py`.
+
+The `objects` dataset and its `index/index.pkl` remain unchanged. MIRFLICKR is served from `data/mirflickr/` and uses its own `index/mirflickr.pkl`; build a balanced sample with `python scripts/build_index.py --dataset mirflickr --limit 10000` before selecting it for visual search. The current MIRFLICKR folder contains 797,039 images, so indexing all of them with all descriptors is a multi-day operation; `--limit` samples evenly across its storage shards. MIRFLICKR results do not show category labels or use category reranking, and keyword search is available for Objects only because MIRFLICKR has no text annotations.
+
 ---
 
 ## 📂 Folder Structure
@@ -178,9 +184,11 @@ projet-cbir/
 │   └── settings.py          # Environment settings
 │
 ├── data/objects/             # Image dataset (Caltech-101)
+├── data/mirflickr/           # MIRFLICKR image dataset
 │
 ├── index/                   # Precomputed visual index
-│   └── index.pkl            # Serialized feature signatures
+│   ├── index.pkl            # Objects feature signatures
+│   └── mirflickr.pkl        # MIRFLICKR feature signatures
 │
 ├── scripts/                 # Offline pipelines
 │   ├── build_index.py       # Visual feature extraction
@@ -230,7 +238,7 @@ Enter keywords like **"watch"**, **"butterfly"**, or **"water lily"** to find ma
 Upload any image to find visually similar images from the database.
 
 ### Search by Text + Image
-Combine a keyword and an uploaded image for **multimodal search**:
+Choose **Text + Image** in the search type menu, enter a keyword, and upload an image or select one from the results. Choose the combination rule:
 - **AND mode**: Text narrows the results, then visual similarity reranks them.
 - **OR mode**: Merges both text and visual results using rank fusion.
 

@@ -12,9 +12,30 @@ function setStatus(message, isError = false) {
 
 function applyMode() {
     const mode = $("mode").value;
-    $("textbox").hidden = mode === "image";
-    $("imagebox").hidden = mode === "text";
-    $("descs").hidden = mode === "text";
+    const hasText = mode === "text" || mode === "combined";
+    const hasImage = mode === "image" || mode === "combined";
+    $("textbox").hidden = !hasText;
+    $("imagebox").hidden = !hasImage;
+    $("descs").hidden = !hasImage;
+    $("opwrap").hidden = mode !== "combined";
+}
+
+function applyDataset() {
+    const mirflickr = $("dataset").value === "mirflickr";
+    const textModes = Array.from($("mode").options).filter(
+        (option) => option.value === "text" || option.value === "combined"
+    );
+    for (const option of textModes) {
+        option.disabled = mirflickr;
+    }
+    $("text-support").textContent = mirflickr
+        ? "MIRFLICKR ne contient pas d'annotations textuelles. Choisissez Objects pour rechercher par mots-clés."
+        : "La recherche par mots-clés est disponible pour Objects.";
+    if (mirflickr && $("mode").value !== "image") {
+        $("mode").value = "image";
+        applyMode();
+        setStatus("La recherche textuelle n'est pas disponible pour MIRFLICKR. Choisissez Objects.", true);
+    }
 }
 
 function showQuery(src, label) {
@@ -98,16 +119,28 @@ async function runSearch() {
     const mode = $("mode").value;
     const k = Number($("k").value) || 20;
     const dataset = $("dataset").value;
+    const text = mode === "image" ? "" : $("text").value.trim();
     const descriptors = Array.from(
         document.querySelectorAll("#descs input:checked"),
         (input) => input.value
     );
+    const operator = $("operator").value;
+
+    if (mode === "text" && !text) {
+        return setStatus("Saisissez des mots-cles.", true);
+    }
+    if (mode === "combined" && !text) {
+        return setStatus("Saisissez des mots-cles pour la recherche combinee.", true);
+    }
+    if (mode !== "text" && !queryImage && !uploadFile) {
+        return setStatus("Choisissez une image : upload ou clic sur un resultat.", true);
+    }
+    if (mode !== "text" && descriptors.length === 0) {
+        return setStatus("Selectionnez au moins un descripteur.", true);
+    }
 
     if (mode === "text") {
         // Recherche textuelle
-        const text = $("text").value.trim();
-        if (!text) return setStatus("Saisissez des mots-cles.", true);
-
         setStatus("Recherche en cours...");
         try {
             const res = await fetch("/search", {
@@ -127,40 +160,45 @@ async function runSearch() {
             setStatus("Impossible de joindre l'API. Est-elle demarree ?", true);
         }
 
-    } else {
-        // Recherche visuelle
-        if (!queryImage && !uploadFile) {
-            return setStatus("Choisissez une image : upload ou clic sur un resultat.", true);
-        }
-        if (descriptors.length === 0) {
-            return setStatus("Selectionnez au moins un descripteur.", true);
-        }
-
+    } else if (uploadFile) {
+        // Image envoyee depuis l'ordinateur, avec ou sans mots-cles
         setStatus("Recherche en cours...");
         try {
-            let res;
-            if (uploadFile) {
-                // Upload depuis l'ordinateur
-                const fd = new FormData();
-                fd.append("file", uploadFile);
-                fd.append("dataset", dataset);
-                fd.append("k", String(k));
-                fd.append("descriptors", descriptors.join(","));
-                fd.append("text", "");
-                res = await fetch("/search/upload", { method: "POST", body: fd });
-            } else {
-                // Image de la base (clic sur un resultat)
-                res = await fetch("/search", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        dataset,
-                        query_image_id: queryImage,
-                        descriptors,
-                        k,
-                    }),
-                });
+            const fd = new FormData();
+            fd.append("file", uploadFile);
+            fd.append("dataset", dataset);
+            fd.append("k", String(k));
+            fd.append("descriptors", descriptors.join(","));
+            fd.append("text", text);
+            fd.append("operator", operator);
+            const res = await fetch("/search/upload", { method: "POST", body: fd });
+            const data = await res.json();
+            if (!res.ok) {
+                render([]);
+                return setStatus(typeof data.detail === "string" ? data.detail : "Erreur.", true);
             }
+            render(data.results);
+            setStatus(data.count + " resultat(s)");
+        } catch (err) {
+            render([]);
+            setStatus("Impossible de joindre l'API. Est-elle demarree ?", true);
+        }
+    } else {
+        // Image de la base, avec ou sans mots-cles
+        setStatus("Recherche en cours...");
+        try {
+            const res = await fetch("/search", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    dataset,
+                    text,
+                    query_image_id: queryImage,
+                    descriptors,
+                    operator,
+                    k,
+                }),
+            });
             const data = await res.json();
             if (!res.ok) {
                 render([]);
@@ -177,6 +215,7 @@ async function runSearch() {
 
 // Event listeners
 $("mode").addEventListener("change", applyMode);
+$("dataset").addEventListener("change", applyDataset);
 $("k").addEventListener("input", () => ($("kout").textContent = $("k").value));
 $("form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -196,3 +235,4 @@ drop.addEventListener("drop", (e) => {
     handleFile(e.dataTransfer.files[0]);
 });
 applyMode();
+applyDataset();

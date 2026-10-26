@@ -82,6 +82,11 @@ label {
     font-size: 14px;
 }
 
+#text-support {
+    color: var(--muted);
+    font-size: 12px;
+}
+
 input[type=text],
 select {
     font: inherit;

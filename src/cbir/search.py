@@ -73,13 +73,18 @@ CATEGORY_BETA = 0.95
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
+DATASET_INDEX_FILES = {
+    "objects": "index.pkl",
+    "mirflickr": "mirflickr.pkl",
+}
 
 
 # ── Identifiants ──────────────────────────────────────────────────────────────
 
-def _clean_id(raw_path: str) -> str:
+def _clean_id(raw_path: str, dataset: str | None = None) -> str:
     p = raw_path.replace("\\", "/")
-    for prefix in ("objects/", "mirflickr/"):
+    prefixes = (f"{dataset}/",) if dataset else ("objects/", "mirflickr/")
+    for prefix in prefixes:
         if p.startswith(prefix):
             p = p[len(prefix):]
             break
@@ -89,7 +94,9 @@ def _clean_id(raw_path: str) -> str:
 # ── Cache ─────────────────────────────────────────────────────────────────────
 
 class _IndexCache:
-    def __init__(self):
+    def __init__(self, dataset: str, index_filename: str):
+        self.dataset = dataset
+        self.index_filename = index_filename
         self.loaded = False
         self.descriptors = []   # liste de dicts
         self.all_paths = []     # identifiants ordonnés
@@ -109,7 +116,7 @@ class _IndexCache:
             self.loaded = True
 
     def _load(self):
-        raw_index = load_index()
+        raw_index = load_index(self.index_filename)
 
         available = [
             (key, desc, dist, w)
@@ -122,7 +129,7 @@ class _IndexCache:
         # Images communes à tous les descripteurs disponibles
         common = None
         for key, _, _, _ in available:
-            ids = {_clean_id(p) for p in raw_index[key].keys()}
+            ids = {_clean_id(p, self.dataset) for p in raw_index[key].keys()}
             common = ids if common is None else common & ids
 
         all_paths = sorted(common)
@@ -131,7 +138,9 @@ class _IndexCache:
         # Construire les matrices alignées (dans une liste locale, publiée à la fin)
         infos = []
         for key, descriptor, dist_type, weight in available:
-            clean_map = {_clean_id(p): v for p, v in raw_index[key].items()}
+            clean_map = {
+                _clean_id(p, self.dataset): v for p, v in raw_index[key].items()
+            }
             matrix = np.array([clean_map[p] for p in all_paths], dtype=np.float32)
 
             info = {
@@ -156,7 +165,20 @@ class _IndexCache:
         self.descriptors = infos
 
 
-_cache = _IndexCache()
+_cache = _IndexCache("objects", DATASET_INDEX_FILES["objects"])
+_dataset_caches = {"objects": _cache}
+_dataset_caches_lock = threading.Lock()
+
+
+def _cache_for_dataset(dataset: str) -> _IndexCache:
+    if dataset not in DATASET_INDEX_FILES:
+        raise ValueError(f"Dataset inconnu : {dataset}")
+    with _dataset_caches_lock:
+        if dataset not in _dataset_caches:
+            _dataset_caches[dataset] = _IndexCache(
+                dataset, DATASET_INDEX_FILES[dataset]
+            )
+        return _dataset_caches[dataset]
 
 
 # ── Distances vectorisées ─────────────────────────────────────────────────────
@@ -195,12 +217,14 @@ def _typical_distance(info: dict, n_samples: int = 40) -> float:
     return float(np.median(d)) if d.size else 1.0
 
 
-def _category_rerank(fused: np.ndarray, idx: np.ndarray) -> np.ndarray:
+def _category_rerank(
+    fused: np.ndarray, idx: np.ndarray, cache: _IndexCache
+) -> np.ndarray:
     """
     Vote de catégorie : réduit le score des images dont la catégorie domine
     parmi les CATEGORY_VOTE_K plus proches voisines. Reste positif (0 reste 0).
     """
-    codes = _cache.cat_codes[idx]
+    codes = cache.cat_codes[idx]
     # On prend K+1 voisines puis on écarte l'image requête si elle est dans la
     # base (score ~ 0) : ainsi K voisines votent, comme dans evaluate.py.
     k1 = min(CATEGORY_VOTE_K + 1, fused.size)
@@ -209,7 +233,7 @@ def _category_rerank(fused: np.ndarray, idx: np.ndarray) -> np.ndarray:
     top = top[fused[top] > 0.01][:CATEGORY_VOTE_K]
     if top.size == 0:
         return fused
-    shares = np.bincount(codes[top], minlength=_cache.n_cats) / top.size
+    shares = np.bincount(codes[top], minlength=cache.n_cats) / top.size
     return fused * (1.0 - CATEGORY_BETA * shares[codes])
 
 
@@ -237,6 +261,7 @@ def _optimized_search(
     k: int,
     descriptors: list[str] | None = None,
     candidate_ids: list[str] | set[str] | None = None,
+    dataset: str = "objects",
 ) -> list[dict]:
     """
     Recherche par fusion pondérée multi-descripteurs.
@@ -244,9 +269,13 @@ def _optimized_search(
     typique de la base et 0 à une image identique. Elle reste surtout utile
     pour classer les résultats d'une même requête.
     """
-    _cache.ensure_loaded()
-    if not _cache.descriptors:
-        raise RuntimeError("Index vide. Lance : python scripts/build_index.py")
+    cache = _cache_for_dataset(dataset)
+    cache.ensure_loaded()
+    if not cache.descriptors:
+        raise RuntimeError(
+            f"Index vide pour {dataset}. "
+            f"Lance : python scripts/build_index.py --dataset {dataset}"
+        )
 
     selected_keys = None
     if descriptors and "auto" not in descriptors:
@@ -258,7 +287,7 @@ def _optimized_search(
             selected_keys.update(keys)
 
     infos = [
-        info for info in _cache.descriptors
+        info for info in cache.descriptors
         if selected_keys is None or info["key"] in selected_keys
     ]
     if not infos:
@@ -268,12 +297,12 @@ def _optimized_search(
         return []
 
     if candidate_ids is None:
-        candidate_indices = np.arange(_cache.n)
+        candidate_indices = np.arange(cache.n)
     else:
         positions = {
-            _cache.path_to_pos[c]
-            for c in (_clean_id(p) for p in candidate_ids)
-            if c in _cache.path_to_pos
+            cache.path_to_pos[c]
+            for c in (_clean_id(p, dataset) for p in candidate_ids)
+            if c in cache.path_to_pos
         }
         candidate_indices = np.array(sorted(positions), dtype=np.intp)
     if candidate_indices.size == 0:
@@ -303,8 +332,8 @@ def _optimized_search(
     fused /= total_weight  # total_weight > 0 car infos non vide
 
     # Image seule (pas de filtre texte) : vote de catégorie
-    if CATEGORY_RERANK and candidate_ids is None:
-        fused = _category_rerank(fused, candidate_indices)
+    if CATEGORY_RERANK and dataset == "objects" and candidate_ids is None:
+        fused = _category_rerank(fused, candidate_indices, cache)
 
     actual_k = min(k, candidate_indices.size)
     top_idx = np.argpartition(fused, actual_k - 1)[:actual_k]
@@ -312,7 +341,7 @@ def _optimized_search(
 
     return [
         {
-            "id": _cache.all_paths[candidate_indices[i]],
+            "id": cache.all_paths[candidate_indices[i]],
             "distance": round(float(fused[i]), 6),
         }
         for i in sorted_idx
@@ -368,7 +397,7 @@ def visual_search(
         raise FileNotFoundError(f"Image introuvable : {img_path}")
 
     image = Image.open(img_path).convert("RGB")
-    return _optimized_search(image, k, descriptors, candidate_ids)
+    return _optimized_search(image, k, descriptors, candidate_ids, dataset)
 
 
 def visual_search_image(
@@ -380,6 +409,6 @@ def visual_search_image(
 ) -> list[dict]:
     """Recherche visuelle à partir d'une image uploadée (POST /search/upload)."""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    return _optimized_search(image, k, descriptors, candidate_ids)
+    return _optimized_search(image, k, descriptors, candidate_ids, dataset)
 
     
